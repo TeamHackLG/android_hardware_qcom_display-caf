@@ -51,7 +51,9 @@ bool VideoOverlay::prepare(hwc_context_t *ctx, hwc_display_contents_1_t *list,
        return false;
     }
 
-    if(!ctx->mMDP.hasOverlay) {
+    if((!ctx->mMDP.hasOverlay) ||
+                            (qdutils::MDPVersion::getInstance().getMDPVersion()
+                             <= qdutils::MDP_V4_0)) {
        ALOGD_IF(VIDEO_DEBUG,"%s, this hw doesnt support overlay", __FUNCTION__);
        return false;
     }
