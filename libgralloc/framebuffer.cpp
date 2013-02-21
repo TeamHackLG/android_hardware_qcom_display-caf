@@ -55,7 +55,6 @@ static inline int max(int a, int b) {
 
 enum {
     PAGE_FLIP = 0x00000001,
-    LOCKED    = 0x00000002
 };
 
 struct fb_context_t {
@@ -86,51 +85,15 @@ static int fb_setSwapInterval(struct framebuffer_device_t* dev,
 
 static int fb_post(struct framebuffer_device_t* dev, buffer_handle_t buffer)
 {
-    if (private_handle_t::validate(buffer) < 0)
-        return -EINVAL;
-
-    fb_context_t* ctx = (fb_context_t*) dev;
-
-    private_handle_t *hnd = static_cast<private_handle_t*>
-                            (const_cast<native_handle_t*>(buffer));
-
     private_module_t* m =
         reinterpret_cast<private_module_t*>(dev->common.module);
-
-
-    if (hnd->flags & private_handle_t::PRIV_FLAGS_FRAMEBUFFER) {
-        genlock_lock_buffer(hnd, GENLOCK_READ_LOCK, GENLOCK_MAX_TIMEOUT);
-
-        const size_t offset = hnd->base - m->framebuffer->base;
-        // frame ready to be posted, signal so that hwc can update External
-        // display
-        pthread_mutex_lock(&m->fbPostLock);
-        m->currentOffset = offset;
-        m->fbPostDone = true;
-        pthread_cond_signal(&m->fbPostCond);
-        pthread_mutex_unlock(&m->fbPostLock);
-
-        m->info.activate = FB_ACTIVATE_VBL;
-        m->info.yoffset = offset / m->finfo.line_length;
-        if (ioctl(m->framebuffer->fd, FBIOPUT_VSCREENINFO, &m->info) == -1) {
-            ALOGE("FBIOPUT_VSCREENINFO failed");
-            genlock_unlock_buffer(hnd);
-            return -errno;
-        }
-
-        //Signals the composition thread to unblock and loop over if necessary
-        pthread_mutex_lock(&m->fbPanLock);
-        m->fbPanDone = true;
-        pthread_cond_signal(&m->fbPanCond);
-        pthread_mutex_unlock(&m->fbPanLock);
-
-        if (m->currentBuffer) {
-            genlock_unlock_buffer(m->currentBuffer);
-            m->currentBuffer = 0;
-        }
-
-        CALC_FPS();
-        m->currentBuffer = hnd;
+    struct mdp_display_commit prim_commit;
+    memset(&prim_commit, 0, sizeof(struct mdp_display_commit));
+    prim_commit.wait_for_finish = 1;
+    if (ioctl(m->framebuffer->fd, MSMFB_DISPLAY_COMMIT, &prim_commit) == -1) {
+        ALOGE("%s: MSMFB_DISPLAY_COMMIT for primary failed, str: %s",
+                __FUNCTION__, strerror(errno));
+        return -errno;
     }
     return 0;
 }
@@ -346,7 +309,7 @@ int mapFrameBufferLocked(struct private_module_t* module)
      */
 
     int err;
-    module->numBuffers = info.yres_virtual / info.yres;
+    module->numBuffers = 2;
     module->bufferMask = 0;
     //adreno needs page aligned offsets. Align the fbsize to pagesize.
     size_t fbSize = roundUpToPageSize(finfo.line_length * info.yres)*
@@ -363,12 +326,6 @@ int mapFrameBufferLocked(struct private_module_t* module)
     module->framebuffer->base = intptr_t(vaddr);
     memset(vaddr, 0, fbSize);
     module->currentOffset = 0;
-    module->fbPostDone = false;
-    pthread_mutex_init(&(module->fbPostLock), NULL);
-    pthread_cond_init(&(module->fbPostCond), NULL);
-    module->fbPanDone = false;
-    pthread_mutex_init(&(module->fbPanLock), NULL);
-    pthread_cond_init(&(module->fbPanCond), NULL);
     return 0;
 }
 

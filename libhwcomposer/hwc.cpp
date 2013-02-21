@@ -25,9 +25,8 @@
 #include <cutils/atomic.h>
 #include <EGL/egl.h>
 #include <utils/Trace.h>
-
+#include <sys/ioctl.h>
 #include <overlay.h>
-#include <fb_priv.h>
 #include <mdp_version.h>
 #include "hwc_utils.h"
 #include "hwc_video.h"
@@ -119,6 +118,17 @@ static void reset_layer_prop(hwc_context_t* ctx, int dpy) {
     if(layer_count) {
        ctx->layerProp[dpy] = new LayerProp[layer_count];
     }
+}
+
+static int display_commit(hwc_context_t *ctx, int dpy) {
+    struct mdp_display_commit commit_info;
+    memset(&commit_info, 0, sizeof(struct mdp_display_commit));
+    commit_info.flags = MDP_DISPLAY_COMMIT_OVERLAY;
+    if(ioctl(ctx->dpyAttr[dpy].fd, MSMFB_DISPLAY_COMMIT, &commit_info) == -1) {
+       ALOGE("%s: MSMFB_DISPLAY_COMMIT for primary failed", __FUNCTION__);
+       return -errno;
+    }
+    return 0;
 }
 
 static int hwc_prepare_primary(hwc_composer_device_1 *dev,
@@ -216,8 +226,6 @@ static int hwc_eventControl(struct hwc_composer_device_1* dev, int dpy,
 {
     int ret = 0;
     hwc_context_t* ctx = (hwc_context_t*)(dev);
-    private_module_t* m = reinterpret_cast<private_module_t*>(
-                ctx->mFbDev->common.module);
     pthread_mutex_lock(&ctx->vstate.lock);
     switch(event) {
         case HWC_EVENT_VSYNC:
@@ -242,8 +250,7 @@ static int hwc_blank(struct hwc_composer_device_1* dev, int dpy, int blank)
 {
     ATRACE_CALL();
     hwc_context_t* ctx = (hwc_context_t*)(dev);
-    private_module_t* m = reinterpret_cast<private_module_t*>(
-        ctx->mFbDev->common.module);
+
     Locker::Autolock _l(ctx->mBlankLock);
     int ret = 0;
     ALOGD("%s: %s display: %d", __FUNCTION__,
@@ -253,9 +260,9 @@ static int hwc_blank(struct hwc_composer_device_1* dev, int dpy, int blank)
             if(blank) {
                 ctx->mOverlay->configBegin();
                 ctx->mOverlay->configDone();
-                ret = ioctl(m->framebuffer->fd, FBIOBLANK, FB_BLANK_POWERDOWN);
+                ret = ioctl(ctx->dpyAttr[dpy].fd, FBIOBLANK,FB_BLANK_POWERDOWN);
             } else {
-                ret = ioctl(m->framebuffer->fd, FBIOBLANK, FB_BLANK_UNBLANK);
+                ret = ioctl(ctx->dpyAttr[dpy].fd, FBIOBLANK, FB_BLANK_UNBLANK);
             }
             break;
         case HWC_DISPLAY_EXTERNAL:
@@ -263,7 +270,7 @@ static int hwc_blank(struct hwc_composer_device_1* dev, int dpy, int blank)
             if(blank) {
                 // External/Virtual Display post commits the changes to display
                 // Call this on blank, so that any pipe unsets gets committed
-                if (!ctx->mExtDisplay->post()) {
+                if (display_commit(ctx, HWC_DISPLAY_VIRTUAL) < 0) {
                     ret = -1;
                     ALOGE("%s:ctx->mExtDisplay->post fail!! ", __FUNCTION__);
                 }
@@ -293,18 +300,12 @@ static int hwc_query(struct hwc_composer_device_1* dev,
                      int param, int* value)
 {
     hwc_context_t* ctx = (hwc_context_t*)(dev);
-    private_module_t* m = reinterpret_cast<private_module_t*>(
-        ctx->mFbDev->common.module);
     int supported = HWC_DISPLAY_PRIMARY_BIT;
 
     switch (param) {
     case HWC_BACKGROUND_LAYER_SUPPORTED:
         // Not supported for now
         value[0] = 0;
-        break;
-    case HWC_VSYNC_PERIOD: //Not used for hwc > 1.1
-        value[0] = m->fps;
-        ALOGI("fps: %d", value[0]);
         break;
     case HWC_DISPLAY_TYPES_SUPPORTED:
         if(ctx->mMDP.hasOverlay)
@@ -317,6 +318,7 @@ static int hwc_query(struct hwc_composer_device_1* dev,
     return 0;
 
 }
+
 
 static int hwc_set_primary(hwc_context_t *ctx, hwc_display_contents_1_t* list) {
     ATRACE_CALL();
@@ -358,9 +360,10 @@ static int hwc_set_primary(hwc_context_t *ctx, hwc_display_contents_1_t* list) {
                 }
             }
         }
-        if (ctx->mFbDev->post(ctx->mFbDev, fbLayer->handle)) {
-            ALOGE("%s: ctx->mFbDev->post fail!", __FUNCTION__);
-            ret = -1;
+
+        if (display_commit(ctx, dpy) < 0) {
+            ALOGE("%s: display commit fail!", __FUNCTION__);
+            return -1;
         }
     }
 
@@ -408,9 +411,10 @@ static int hwc_set_external(hwc_context_t *ctx,
                 ret = -1;
             }
         }
-        if (!ctx->mExtDisplay->post()) {
-            ALOGE("%s: ctx->mExtDisplay->post fail!", __FUNCTION__);
-            ret = -1;
+
+        if (display_commit(ctx, dpy) < 0) {
+            ALOGE("%s: display commit fail!", __FUNCTION__);
+            return -1;
         }
     }
 
