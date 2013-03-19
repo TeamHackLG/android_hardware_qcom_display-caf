@@ -146,6 +146,7 @@ bool isSecureModePolicy(int mdpVersion);
 bool isExternalActive(hwc_context_t* ctx);
 bool needsScaling(hwc_layer_1_t const* layer);
 bool setupBasePipe(hwc_context_t *ctx);
+int getBlending(int blending);
 
 //Helper function to dump logs
 void dumpsys_log(android::String8& buf, const char* fmt, ...);
@@ -242,8 +243,7 @@ void init_uevent_thread(hwc_context_t* ctx);
 void init_vsync_thread(hwc_context_t* ctx);
 
 inline void getLayerResolution(const hwc_layer_1_t* layer,
-                               int& width, int& height)
-{
+                               int& width, int& height) {
     hwc_rect_t displayFrame  = layer->displayFrame;
     width = displayFrame.right - displayFrame.left;
     height = displayFrame.bottom - displayFrame.top;

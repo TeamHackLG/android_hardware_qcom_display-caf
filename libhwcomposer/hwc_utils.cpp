@@ -420,6 +420,18 @@ bool isSecureModePolicy(int mdpVersion) {
         return false;
 }
 
+int getBlending(int blending) {
+    switch(blending) {
+    case HWC_BLENDING_NONE:
+        return overlay::utils::OVERLAY_BLENDING_OPAQUE;
+    case HWC_BLENDING_PREMULT:
+        return overlay::utils::OVERLAY_BLENDING_PREMULT;
+    case HWC_BLENDING_COVERAGE :
+    default:
+        return overlay::utils::OVERLAY_BLENDING_COVERAGE;
+    }
+}
+
 //Crops source buffer against destination and FB boundaries
 void calculate_crop_rects(hwc_rect_t& crop, hwc_rect_t& dst,
                           const hwc_rect_t& scissor, int orient) {
@@ -811,7 +823,11 @@ int configureLowRes(hwc_context_t *ctx, hwc_layer_1_t *layer,
     orient = OVERLAY_TRANSFORM_0;
     transform = 0;
 
-    PipeArgs parg(mdpFlags, whf, z, isFg, static_cast<eRotFlags>(rotFlags));
+    PipeArgs parg(mdpFlags, whf, z, isFg,
+                  static_cast<eRotFlags>(rotFlags), layer->planeAlpha,
+                  (ovutils::eBlending) getBlending(layer->blending));
+
+
     if(configMdp(ctx->mOverlay, parg, orient, crop, dst, dest) < 0) {
         ALOGE("%s: commit failed for low res panel", __FUNCTION__);
         return -1;
@@ -902,7 +918,9 @@ int configureHighRes(hwc_context_t *ctx, hwc_layer_1_t *layer,
     //configure left mixer
     if(lDest != OV_INVALID) {
         PipeArgs pargL(mdpFlagsL, whf, z, isFg,
-                static_cast<eRotFlags>(rotFlags));
+                       static_cast<eRotFlags>(rotFlags), layer->planeAlpha,
+                       (ovutils::eBlending) getBlending(layer->blending));
+
         if(configMdp(ctx->mOverlay, pargL, orient,
                 tmp_cropL, tmp_dstL, lDest) < 0) {
             ALOGE("%s: commit failed for left mixer config", __FUNCTION__);
@@ -913,7 +931,9 @@ int configureHighRes(hwc_context_t *ctx, hwc_layer_1_t *layer,
     //configure right mixer
     if(rDest != OV_INVALID) {
         PipeArgs pargR(mdpFlagsR, whf, z, isFg,
-                static_cast<eRotFlags>(rotFlags));
+                static_cast<eRotFlags>(rotFlags), layer->planeAlpha,
+                (ovutils::eBlending) getBlending(layer->blending));
+
         tmp_dstR.right = tmp_dstR.right - tmp_dstR.left;
         tmp_dstR.left = 0;
         if(configMdp(ctx->mOverlay, pargR, orient,
