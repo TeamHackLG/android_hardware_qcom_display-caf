@@ -324,6 +324,7 @@ size_t getBufferSizeAndDimensions(int width, int height, int format,
             alignedh = height;
             alignedw = width;
             size = width;
+            break;
         default:
             ALOGE("unrecognized pixel format: 0x%x", format);
             return -EINVAL;
