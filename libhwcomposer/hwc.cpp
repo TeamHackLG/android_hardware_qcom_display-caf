@@ -154,9 +154,10 @@ static int hwc_prepare_primary(hwc_composer_device_1 *dev,
                 ctx->mFBUpdate[dpy]->prepare(ctx, list);
             }
             ctx->mLayerCache[dpy]->updateLayerCache(list);
-            // Use Copybit, when MDP comp fails
+            if (ctx->mMDP.version < qdutils::MDP_V4_0) {
             if(!ret && ctx->mCopyBit[dpy])
                 ctx->mCopyBit[dpy]->prepare(ctx, list, dpy);
+            }
         }
     }
     return 0;
