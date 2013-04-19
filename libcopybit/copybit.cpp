@@ -42,15 +42,8 @@
 
 /******************************************************************************/
 
-#if defined(COPYBIT_MSM7K)
 #define MAX_SCALE_FACTOR    (4)
 #define MAX_DIMENSION       (4096)
-#elif defined(COPYBIT_QSD8K)
-#define MAX_SCALE_FACTOR    (8)
-#define MAX_DIMENSION       (2048)
-#else
-#error "Unsupported MDP version"
-#endif
 
 /******************************************************************************/
 
@@ -396,6 +389,7 @@ static int stretch_copybit(
             struct mdp_blit_req req[12];
         } list;
 
+        memset(&list, 0, sizeof(list));
         if (ctx->mAlpha < 255) {
             switch (src->format) {
                 // we don't support plane alpha with RGBA formats
@@ -525,6 +519,11 @@ static int close_copybit(struct hw_device_t *dev)
     return 0;
 }
 
+static int flush_get_fence(struct copybit_device_t *dev, int* fd)
+{
+    return -1;
+}
+
 /** Open a new instance of a copybit device using name */
 static int open_copybit(const struct hw_module_t* module, const char* name,
                         struct hw_device_t** device)
@@ -543,6 +542,7 @@ static int open_copybit(const struct hw_module_t* module, const char* name,
     ctx->device.blit = blit_copybit;
     ctx->device.stretch = stretch_copybit;
     ctx->device.finish = finish_copybit;
+    ctx->device.flush_get_fence = flush_get_fence;
     ctx->mAlpha = MDP_ALPHA_NOP;
     ctx->mFlags = 0;
     ctx->mFD = open("/dev/graphics/fb0", O_RDWR, 0);
@@ -552,25 +552,8 @@ static int open_copybit(const struct hw_module_t* module, const char* name,
               status, strerror(status));
         status = -status;
     } else {
-        struct fb_fix_screeninfo finfo;
-        if (ioctl(ctx->mFD, FBIOGET_FSCREENINFO, &finfo) == 0) {
-            if (strncmp(finfo.id, "msmfb", 5) == 0) {
-                /* Success */
-                status = 0;
-            } else {
-                ALOGE("Error not msm frame buffer");
-                status = -EINVAL;
-            }
-        } else {
-            ALOGE("Error executing ioctl for screen info");
-            status = -errno;
-        }
-    }
-
-    if (status == 0) {
+        status = 0;
         *device = &ctx->device.common;
-    } else {
-        close_copybit(&ctx->device.common);
     }
     return status;
 }
