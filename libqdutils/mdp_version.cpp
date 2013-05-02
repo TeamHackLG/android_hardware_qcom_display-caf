@@ -71,7 +71,9 @@ MDPVersion::MDPVersion()
     close(fb_fd);
     mMDPVersion = mdp_version;
     mHasOverlay = false;
-    if((mMDPVersion >= MDP_V4_0) || (mMDPVersion == MDP_V_UNKNOWN))
+    if((mMDPVersion >= MDP_V4_0) ||
+       (mMDPVersion == MDP_V_UNKNOWN) ||
+       (mMDPVersion == MDP_V3_0_4))
         mHasOverlay = true;
     mPanelType = panel_type;
 }
