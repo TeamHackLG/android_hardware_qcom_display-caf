@@ -79,7 +79,7 @@ void CopyBit::reset() {
 
 bool CopyBit::canUseCopybitForYUV(hwc_context_t *ctx) {
     // return true for non-overlay targets
-    if(ctx->mMDP.hasOverlay) {
+    if(ctx->mMDP.hasOverlay && ctx->mMDP.version >= qdutils::MDP_V4_0) {
        return false;
     }
     return true;
@@ -185,6 +185,10 @@ bool CopyBit::prepare(hwc_context_t *ctx, hwc_display_contents_1_t *list,
         }
     }
 
+    // We cannot mix copybit layer with layers marked to be drawn on FB
+    if (!useCopybitForYUV && ctx->listStats[dpy].yuvCount)
+        return true;
+ 
 
     // numAppLayers-1, as we iterate till 0th layer index
     for (int i = ctx->listStats[dpy].numAppLayers-1; i >= 0 ; i--) {
