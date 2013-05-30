@@ -58,11 +58,15 @@ ANDROID_SINGLETON_STATIC_INSTANCE(AdrenoMemInfo);
 static bool canFallback(int usage, bool triedSystem)
 {
     // Fallback to system heap when alloc fails unless
-    // 1. Alloc from system heap was already tried
-    // 2. The heap type is requsted explicitly
-    // 3. The heap type is protected
-    // 4. The buffer is meant for external display only
+    // 1. Composition type is MDP
+    // 2. Alloc from system heap was already tried
+    // 3. The heap type is requsted explicitly
+    // 4. The heap type is protected
+    // 5. The buffer is meant for external display only
 
+    if(QCCompositionType::getInstance().getCompositionType() &
+       COMPOSITION_TYPE_MDP)
+        return false;
     if(triedSystem)
         return false;
     if(usage & (GRALLOC_HEAP_MASK | GRALLOC_USAGE_PROTECTED))
@@ -75,10 +79,9 @@ static bool canFallback(int usage, bool triedSystem)
 
 static bool useUncached(int usage)
 {
-    // System heaps cannot be uncached
-    if(usage & GRALLOC_USAGE_PRIVATE_SYSTEM_HEAP)
-        return false;
-    if (usage & GRALLOC_USAGE_PRIVATE_UNCACHED)
+    if (usage & GRALLOC_USAGE_PRIVATE_UNCACHED ||
+        usage & GRALLOC_USAGE_SW_WRITE_RARELY  ||
+        usage & GRALLOC_USAGE_SW_READ_RARELY)
         return true;
     return false;
 }
