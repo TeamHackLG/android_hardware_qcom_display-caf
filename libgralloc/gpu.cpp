@@ -113,10 +113,9 @@ int gpu_context_t::gralloc_alloc_buffer(size_t size, int usage,
 
         if (bufferType == BUFFER_TYPE_VIDEO) {
             if (usage & GRALLOC_USAGE_HW_CAMERA_WRITE) {
-                if ((qdutils::MDPVersion::getInstance().getMDPVersion() <
-                     qdutils::MDSS_V5)) { //A-Family
-                    flags |= private_handle_t::PRIV_FLAGS_ITU_R_601_FR;
-                } else {
+#ifndef MDSS_TARGET
+                flags |= private_handle_t::PRIV_FLAGS_ITU_R_601_FR;
+#else
                 // Per the camera spec ITU 709 format should be set only for
                 // video encoding.
                 // It should be set to ITU 601 full range format for any other
@@ -128,6 +127,7 @@ int gpu_context_t::gralloc_alloc_buffer(size_t size, int usage,
                     else
                         flags |= private_handle_t::PRIV_FLAGS_ITU_R_601_FR;
                 }
+#endif
             } else {
                 flags |= private_handle_t::PRIV_FLAGS_ITU_R_601;
             }
