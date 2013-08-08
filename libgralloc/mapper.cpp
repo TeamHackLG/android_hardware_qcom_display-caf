@@ -69,13 +69,19 @@ static int gralloc_map(gralloc_module_t const* module,
         IMemAlloc* memalloc = getAllocator(hnd->flags) ;
         int err = memalloc->map_buffer(&mappedAddress, size,
                                        hnd->offset, hnd->fd);
-        if(err || mappedAddress == MAP_FAILED) {
+        if(err) {
             ALOGE("Could not mmap handle %p, fd=%d (%s)",
                   handle, hnd->fd, strerror(errno));
             hnd->base = 0;
             return -errno;
         }
 
+        if (mappedAddress == MAP_FAILED) {
+            ALOGE("Could not mmap handle %p, fd=%d (%s)",
+                  handle, hnd->fd, strerror(errno));
+            hnd->base = 0;
+            return -errno;
+        }
         hnd->base = intptr_t(mappedAddress) + hnd->offset;
         //LOGD("gralloc_map() succeeded fd=%d, off=%d, size=%d, vaddr=%p",
         //        hnd->fd, hnd->offset, hnd->size, mappedAddress);
@@ -83,7 +89,14 @@ static int gralloc_map(gralloc_module_t const* module,
         size = ROUND_UP_PAGESIZE(sizeof(MetaData_t));
         err = memalloc->map_buffer(&mappedAddress, size,
                                        hnd->offset_metadata, hnd->fd_metadata);
-        if(err || mappedAddress == MAP_FAILED) {
+        if(err) {
+            ALOGE("Could not mmap handle %p, fd=%d (%s)",
+                  handle, hnd->fd_metadata, strerror(errno));
+            hnd->base_metadata = 0;
+            return -errno;
+        }
+
+        if (mappedAddress == MAP_FAILED) {
             ALOGE("Could not mmap handle %p, fd=%d (%s)",
                   handle, hnd->fd_metadata, strerror(errno));
             hnd->base_metadata = 0;
@@ -270,12 +283,19 @@ int gralloc_lock(gralloc_module_t const* module,
             // Mark this buffer as locked for SW read/write operation.
             hnd->flags |= private_handle_t::PRIV_FLAGS_SW_LOCK;
         }
-
+         //Invalidate if reading in software. No need to do this for the metadata
+        //buffer as it is only read/written in software.
+        IMemAlloc* memalloc = getAllocator(hnd->flags) ;
+        err = memalloc->clean_buffer((void*)hnd->base,
+                                     hnd->size, hnd->offset, hnd->fd,
+                                     CACHE_INVALIDATE);
         if ((usage & GRALLOC_USAGE_SW_WRITE_MASK) &&
             !(hnd->flags & private_handle_t::PRIV_FLAGS_FRAMEBUFFER)) {
             // Mark the buffer to be flushed after cpu read/write
             hnd->flags |= private_handle_t::PRIV_FLAGS_NEEDS_FLUSH;
         }
+     } else {
+        hnd->flags |= private_handle_t::PRIV_FLAGS_DO_NOT_FLUSH;
     }
     return err;
 }
@@ -285,23 +305,23 @@ int gralloc_unlock(gralloc_module_t const* module,
 {
     if (private_handle_t::validate(handle) < 0)
         return -EINVAL;
-
+    int err = 0;
     private_handle_t* hnd = (private_handle_t*)handle;
+    IMemAlloc* memalloc = getAllocator(hnd->flags);
 
     if (hnd->flags & private_handle_t::PRIV_FLAGS_NEEDS_FLUSH) {
-        int err;
-        IMemAlloc* memalloc = getAllocator(hnd->flags) ;
         err = memalloc->clean_buffer((void*)hnd->base,
-                                     hnd->size, hnd->offset, hnd->fd);
-        ALOGE_IF(err < 0, "cannot flush handle %p (offs=%x len=%x, flags = 0x%x) err=%s\n",
-                 hnd, hnd->offset, hnd->size, hnd->flags, strerror(errno));
-        unsigned long size = ROUND_UP_PAGESIZE(sizeof(MetaData_t));
-        err = memalloc->clean_buffer((void*)hnd->base_metadata, size,
-                hnd->offset_metadata, hnd->fd_metadata);
-        ALOGE_IF(err < 0, "cannot flush handle %p (offs=%x len=%lu, "
-                "flags = 0x%x) err=%s\n", hnd, hnd->offset_metadata, size,
-                hnd->flags, strerror(errno));
+                                     hnd->size, hnd->offset, hnd->fd,
+                                     CACHE_CLEAN_AND_INVALIDATE);
         hnd->flags &= ~private_handle_t::PRIV_FLAGS_NEEDS_FLUSH;
+    } else if(hnd->flags & private_handle_t::PRIV_FLAGS_DO_NOT_FLUSH) {
+        hnd->flags &= ~private_handle_t::PRIV_FLAGS_DO_NOT_FLUSH;
+    } else {
+        //Probably a round about way to do this, but this avoids adding new
+        //flags
+        err = memalloc->clean_buffer((void*)hnd->base,
+                                     hnd->size, hnd->offset, hnd->fd,
+                                     CACHE_INVALIDATE);
     }
 
     if ((hnd->flags & private_handle_t::PRIV_FLAGS_SW_LOCK)) {
@@ -312,7 +332,7 @@ int gralloc_unlock(gralloc_module_t const* module,
         } else
             hnd->flags &= ~private_handle_t::PRIV_FLAGS_SW_LOCK;
     }
-    return 0;
+    return err;
 }
 
 /*****************************************************************************/
@@ -353,7 +373,6 @@ int gralloc_perform(struct gralloc_module_t const* module,
                 break;
 
             }
-#ifdef QCOM_BSP
         case GRALLOC_MODULE_PERFORM_UPDATE_BUFFER_GEOMETRY:
             {
                 int width = va_arg(args, int);
@@ -377,7 +396,6 @@ int gralloc_perform(struct gralloc_module_t const* module,
                 *stride = AdrenoMemInfo::getInstance().getStride(width, format);
                 res = 0;
             } break;
-#endif
         default:
             break;
     }

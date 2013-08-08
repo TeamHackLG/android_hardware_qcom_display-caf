@@ -30,7 +30,7 @@
 #ifndef GRALLOC_IONALLOC_H
 #define GRALLOC_IONALLOC_H
 
-#include <linux/ion.h>
+#include <linux/msm_ion.h>
 #include "memalloc.h"
 #include "gr.h"
 
@@ -51,7 +51,7 @@ class IonAlloc : public IMemAlloc  {
                              int offset);
 
     virtual int clean_buffer(void*base, size_t size,
-                             int offset, int fd);
+                             int offset, int fd, int op);
 
     IonAlloc() { mIonFd = FD_INIT; }
 

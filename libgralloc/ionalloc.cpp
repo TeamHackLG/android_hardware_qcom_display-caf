@@ -85,11 +85,11 @@ int IonAlloc::alloc_buffer(alloc_data& data)
 #else
     ionAllocData.heap_mask = data.flags & ~ION_SECURE;
     ionAllocData.flags = data.uncached ? 0 : ION_FLAG_CACHED;
-#endif
     // ToDo: replace usage of alloc data structure with
     //  ionallocdata structure.
     if (data.flags & ION_SECURE)
         ionAllocData.flags |= ION_SECURE;
+#endif
 
     err = open_device();
     if (err)
@@ -125,11 +125,21 @@ int IonAlloc::alloc_buffer(alloc_data& data)
 
     fd_data.handle = ionAllocData.handle;
     handle_data.handle = ionAllocData.handle;
-    if(ioctl(mIonFd, ION_IOC_MAP, &fd_data)) {
+#ifndef NEW_ION_API
+    if(ioctl(iFd, ION_IOC_MAP, &fd_data))
+#else
+    if(ioctl(mIonFd, ION_IOC_MAP, &fd_data))
+#endif
+    {
         err = -errno;
         ALOGE("%s: ION_IOC_MAP failed with error - %s",
               __FUNCTION__, strerror(errno));
         ioctl(mIonFd, ION_IOC_FREE, &handle_data);
+#ifndef NEW_ION_API
+        if(ionSyncFd >= 0)
+            close(ionSyncFd);
+        ionSyncFd = FD_INIT;
+#endif
         return err;
     }
 
@@ -141,12 +151,23 @@ int IonAlloc::alloc_buffer(alloc_data& data)
             ALOGE("%s: Failed to map the allocated memory: %s",
                   __FUNCTION__, strerror(errno));
             ioctl(mIonFd, ION_IOC_FREE, &handle_data);
+#ifndef NEW_ION_API
+            ionSyncFd = FD_INIT;
+#endif
             return err;
         }
         memset(base, 0, ionAllocData.len);
         // Clean cache after memset
-        clean_buffer(base, data.size, data.offset, fd_data.fd);
+        clean_buffer(base, data.size, data.offset, fd_data.fd,
+                     CACHE_CLEAN_AND_INVALIDATE);
     }
+
+#ifndef NEW_ION_API
+    //Close the uncached FD since we no longer need it;
+    if(ionSyncFd >= 0)
+        close(ionSyncFd);
+    ionSyncFd = FD_INIT;
+#endif
 
     data.base = base;
     data.fd = fd_data.fd;
@@ -209,7 +230,7 @@ int IonAlloc::unmap_buffer(void *base, size_t size, int offset)
     return err;
 
 }
-int IonAlloc::clean_buffer(void *base, size_t size, int offset, int fd)
+int IonAlloc::clean_buffer(void *base, size_t size, int offset, int fd, int op)
 {
     struct ion_flush_data flush_data;
     struct ion_fd_data fd_data;
@@ -237,7 +258,18 @@ int IonAlloc::clean_buffer(void *base, size_t size, int offset, int fd)
 
 #ifdef NEW_ION_API
     struct ion_custom_data d;
-    d.cmd = ION_IOC_CLEAN_INV_CACHES;
+    switch(op) {
+    case CACHE_CLEAN:
+        d.cmd = ION_IOC_CLEAN_CACHES;
+        break;
+    case CACHE_INVALIDATE:
+            d.cmd = ION_IOC_INV_CACHES;
+        break;
+    case CACHE_CLEAN_AND_INVALIDATE:
+    default:
+        d.cmd = ION_IOC_CLEAN_INV_CACHES;
+    }
+
     d.arg = (unsigned long int)&flush_data;
 
     if(ioctl(mIonFd, ION_IOC_CUSTOM, &d)) {
@@ -254,4 +286,3 @@ int IonAlloc::clean_buffer(void *base, size_t size, int offset, int fd)
     ioctl(mIonFd, ION_IOC_FREE, &handle_data);
     return 0;
 }
-

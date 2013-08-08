@@ -92,12 +92,11 @@ int gpu_context_t::gralloc_alloc_framebuffer_locked(size_t size, int usage,
 
     // create a "fake" handle for it
     intptr_t vaddr = intptr_t(m->framebuffer->base);
-    private_handle_t* hnd = new private_handle_t(
-                                dup(m->framebuffer->fd), bufferSize,
-                                private_handle_t::PRIV_FLAGS_USES_ION |
-                                private_handle_t::PRIV_FLAGS_FRAMEBUFFER,
-                                BUFFER_TYPE_UI, m->fbFormat, m->info.xres,
-                                m->info.yres);
+    private_handle_t* hnd = new private_handle_t(dup(m->framebuffer->fd), bufferSize,
+                                                 private_handle_t::PRIV_FLAGS_USES_PMEM |
+                                                 private_handle_t::PRIV_FLAGS_FRAMEBUFFER,
+                                                 BUFFER_TYPE_UI, m->fbFormat, m->info.xres,
+                                                 m->info.yres);
 
     // find a free slot
     for (uint32_t i=0 ; i<numBuffers ; i++) {
@@ -162,8 +161,7 @@ int gpu_context_t::gralloc_alloc_buffer(size_t size, int usage,
         eData.align = getpagesize();
         int eDataUsage = GRALLOC_USAGE_PRIVATE_SYSTEM_HEAP;
         int eDataErr = mAllocCtrl->allocate(eData, eDataUsage);
-        ALOGE_IF(eDataErr, "gralloc failed for eDataErr=%s",
-                                          strerror(-eDataErr));
+        ALOGE_IF(eDataErr, "gralloc failed for eData err=%s", strerror(-err));
 
         if (usage & GRALLOC_USAGE_PRIVATE_UNSYNCHRONIZED) {
             flags |= private_handle_t::PRIV_FLAGS_UNSYNCHRONIZED;
@@ -191,6 +189,7 @@ int gpu_context_t::gralloc_alloc_buffer(size_t size, int usage,
         if (usage & GRALLOC_USAGE_HW_CAMERA_READ) {
             flags |= private_handle_t::PRIV_FLAGS_CAMERA_READ;
         }
+
 
         flags |= data.allocType;
         int eBaseAddr = int(eData.base) + eData.offset;
@@ -257,9 +256,13 @@ int gpu_context_t::alloc_impl(int w, int h, int format, int usage,
         (usage & GRALLOC_USAGE_PROTECTED)) {
         bufferType = BUFFER_TYPE_VIDEO;
     }
-
-    int err = gralloc_alloc_buffer(size, usage, pHandle, bufferType,
-            grallocFormat, alignedw, alignedh);
+    int err;
+    if (usage & GRALLOC_USAGE_HW_FB) {
+        err = gralloc_alloc_framebuffer(size, usage, pHandle);
+    } else {
+        err = gralloc_alloc_buffer(size, usage, pHandle, bufferType,
+                                   grallocFormat, alignedw, alignedh);
+    }
 
     if (err < 0) {
         return err;
@@ -286,6 +289,10 @@ int gpu_context_t::free_impl(private_handle_t const* hnd) {
     } else {
         terminateBuffer(&m->base, const_cast<private_handle_t*>(hnd));
         IMemAlloc* memalloc = mAllocCtrl->getAllocator(hnd->flags);
+        if(memalloc == NULL) {
+            ALOGE("%s: Invalid alloc controller", __FUNCTION__);
+            return -EINVAL;
+        }
         int err = memalloc->free_buffer((void*)hnd->base, (size_t) hnd->size,
                                         hnd->offset, hnd->fd);
         if(err)
