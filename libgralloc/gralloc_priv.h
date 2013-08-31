@@ -84,6 +84,9 @@ enum {
      * but still need to be protected from screen captures
      */
     GRALLOC_USAGE_PRIVATE_CP_BUFFER       =       0x00400000,
+
+    /* This flag is used for SECURE display usecase */
+    GRALLOC_USAGE_PRIVATE_SECURE_DISPLAY  =       0x00800000,
 };
 
 enum {
@@ -176,6 +179,7 @@ struct private_handle_t : public native_handle {
             PRIV_FLAGS_ITU_R_601          = 0x00200000,
             PRIV_FLAGS_ITU_R_601_FR       = 0x00400000,
             PRIV_FLAGS_ITU_R_709          = 0x00800000,
+            PRIV_FLAGS_SECURE_DISPLAY     = 0x01000000,
         };
 
         // file-descriptors
