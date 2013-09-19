@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2008 The Android Open Source Project
- * Copyright (c) 2011-2012, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011-2013, The Linux Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -68,32 +68,19 @@ static int gralloc_map(gralloc_module_t const* module,
         IMemAlloc* memalloc = getAllocator(hnd->flags) ;
         int err = memalloc->map_buffer(&mappedAddress, size,
                                        hnd->offset, hnd->fd);
-        if(err) {
+        if(err || mappedAddress == MAP_FAILED) {
             ALOGE("Could not mmap handle %p, fd=%d (%s)",
                   handle, hnd->fd, strerror(errno));
             hnd->base = 0;
             return -errno;
         }
 
-        if (mappedAddress == MAP_FAILED) {
-            ALOGE("Could not mmap handle %p, fd=%d (%s)",
-                  handle, hnd->fd, strerror(errno));
-            hnd->base = 0;
-            return -errno;
-        }
         hnd->base = intptr_t(mappedAddress) + hnd->offset;
         mappedAddress = MAP_FAILED;
         size = ROUND_UP_PAGESIZE(sizeof(MetaData_t));
         err = memalloc->map_buffer(&mappedAddress, size,
                                        hnd->offset_metadata, hnd->fd_metadata);
-        if(err) {
-            ALOGE("Could not mmap handle %p, fd=%d (%s)",
-                  handle, hnd->fd_metadata, strerror(errno));
-            hnd->base_metadata = 0;
-            return -errno;
-        }
-
-        if (mappedAddress == MAP_FAILED) {
+        if(err || mappedAddress == MAP_FAILED) {
             ALOGE("Could not mmap handle %p, fd=%d (%s)",
                   handle, hnd->fd_metadata, strerror(errno));
             hnd->base_metadata = 0;
@@ -181,6 +168,7 @@ int gralloc_register_buffer(gralloc_module_t const* module,
         hnd->base = 0;
         return -EINVAL;
     }
+
     return 0;
 }
 
@@ -371,6 +359,7 @@ int gralloc_unlock(gralloc_module_t const* module,
         } else
             hnd->flags &= ~private_handle_t::PRIV_FLAGS_SW_LOCK;
     }
+
     return err;
 }
 
@@ -412,6 +401,7 @@ int gralloc_perform(struct gralloc_module_t const* module,
                 break;
 
             }
+#ifdef QCOM_BSP
         case GRALLOC_MODULE_PERFORM_UPDATE_BUFFER_GEOMETRY:
             {
                 int width = va_arg(args, int);
@@ -427,6 +417,7 @@ int gralloc_perform(struct gralloc_module_t const* module,
                 res = 0;
             }
             break;
+#endif
         case GRALLOC_MODULE_PERFORM_GET_STRIDE:
             {
                 int width   = va_arg(args, int);

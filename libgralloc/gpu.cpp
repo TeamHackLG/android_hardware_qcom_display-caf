@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2010 The Android Open Source Project
- * Copyright (c) 2011-2012 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011-2013 The Linux Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -91,7 +91,9 @@ int gpu_context_t::gralloc_alloc_buffer(size_t size, int usage,
         eData.align = getpagesize();
         int eDataUsage = GRALLOC_USAGE_PRIVATE_SYSTEM_HEAP;
         int eDataErr = mAllocCtrl->allocate(eData, eDataUsage);
-        ALOGE_IF(eDataErr, "gralloc failed for eData err=%s", strerror(-err));
+        ALOGE_IF(eDataErr, "gralloc failed for eDataErr=%s",
+                                          strerror(-eDataErr));
+
 
         if (usage & GRALLOC_USAGE_PRIVATE_UNSYNCHRONIZED) {
             flags |= private_handle_t::PRIV_FLAGS_UNSYNCHRONIZED;
@@ -153,6 +155,7 @@ int gpu_context_t::gralloc_alloc_buffer(size_t size, int usage,
 
         hnd->offset = data.offset;
         hnd->base = int(data.base) + data.offset;
+
         *pHandle = hnd;
     }
 
@@ -281,7 +284,7 @@ int gpu_context_t::alloc_impl(int w, int h, int format, int usage,
         (usage & GRALLOC_USAGE_PROTECTED)) {
         bufferType = BUFFER_TYPE_VIDEO;
     }
-    
+
     bool useFbMem = false;
     char property[PROPERTY_VALUE_MAX];
     if((usage & GRALLOC_USAGE_HW_FB) &&
@@ -310,6 +313,7 @@ int gpu_context_t::alloc_impl(int w, int h, int format, int usage,
         free_impl(reinterpret_cast<private_handle_t*>(pHandle));
         return err;
     }
+
     *pStride = alignedw;
     return 0;
 }
