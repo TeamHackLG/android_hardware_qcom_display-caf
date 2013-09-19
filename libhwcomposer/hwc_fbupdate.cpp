@@ -19,8 +19,15 @@
  */
 
 #define DEBUG_FBUPDATE 0
+#include <cutils/properties.h>
 #include <gralloc_priv.h>
 #include "hwc_fbupdate.h"
+#include "hwc_video.h"
+#include <overlayRotator.h>
+#include "hwc_fbupdate.h"
+#include "external.h"
+
+using overlay::Rotator;
 
 namespace qhwc {
 
@@ -35,6 +42,7 @@ IFBUpdate* IFBUpdate::getObject(const int& width, const int& dpy) {
 
 inline void IFBUpdate::reset() {
     mModeOn = false;
+    mRot = NULL;
 }
 
 //================= Low res====================================
@@ -64,13 +72,20 @@ bool FBUpdateLowRes::configure(hwc_context_t *ctx,
     bool ret = false;
     hwc_layer_1_t *layer = &list->hwLayers[list->numHwLayers - 1];
     if (LIKELY(ctx->mOverlay)) {
+        int extOnlyLayerIndex = ctx->listStats[mDpy].extOnlyLayerIndex;
+        // ext only layer present..
+        if(extOnlyLayerIndex != -1) {
+            layer = &list->hwLayers[extOnlyLayerIndex];
+            layer->compositionType = HWC_OVERLAY;
+        }
         overlay::Overlay& ov = *(ctx->mOverlay);
         private_handle_t *hnd = (private_handle_t *)layer->handle;
         if (!hnd) {
             ALOGE("%s:NULL private handle for layer!", __FUNCTION__);
             return false;
         }
-        ovutils::Whf info(hnd->width, hnd->height, hnd->format, hnd->size);
+        ovutils::Whf info(hnd->width, hnd->height,
+                ovutils::getMdpFormat(hnd->format), hnd->size);
 
         //Request an RGB pipe
         ovutils::eDest dest = ov.nextPipe(ovutils::OV_MDP_PIPE_RGB, mDpy);
@@ -81,40 +96,85 @@ bool FBUpdateLowRes::configure(hwc_context_t *ctx,
         mDest = dest;
 
         ovutils::eMdpFlags mdpFlags = ovutils::OV_MDP_FLAGS_NONE;
+        // If any of the layers has pre-multiplied alpha, set Pre multiplied
+        // Flag as the compositied output is alpha pre-multiplied.
+        if(ctx->listStats[mDpy].preMultipliedAlpha == true)
+               ovutils::setMdpFlags(mdpFlags, ovutils::OV_MDP_BLEND_FG_PREMULT);
 
+        ovutils::eZorder z_order =
+              ctx->mVidOv[mDpy]->isModeOn()?ovutils::ZORDER_1:ovutils::ZORDER_0;
+        ovutils::eIsFg is_fg =
+           ctx->mVidOv[mDpy]->isModeOn()? ovutils::IS_FG_OFF:ovutils::IS_FG_SET;
+
+        hwc_rect_t sourceCrop = layer->sourceCrop;
+        hwc_rect_t displayFrame = layer->displayFrame;
+        int transform = layer->transform;
+        int fbWidth  = ctx->dpyAttr[mDpy].xres;
+        int fbHeight = ctx->dpyAttr[mDpy].yres;
+        int rotFlags = ovutils::ROT_FLAGS_NONE;
+
+        ovutils::eTransform orient =
+                    static_cast<ovutils::eTransform>(transform);
+        if(mDpy && ctx->mExtOrientation) {
+            // If there is a external orientation set, use that
+            transform = ctx->mExtOrientation;
+            orient = static_cast<ovutils::eTransform >(ctx->mExtOrientation);
+        }
+
+        // Dont do wormhole calculation when extorientation is set on External
+        if((!mDpy || (mDpy && !ctx->mExtOrientation))
+                               && extOnlyLayerIndex == -1) {
+            getNonWormholeRegion(list, sourceCrop);
+            displayFrame = sourceCrop;
+        }
+        ovutils::Dim dpos(displayFrame.left,
+                          displayFrame.top,
+                          displayFrame.right - displayFrame.left,
+                          displayFrame.bottom - displayFrame.top);
+
+        if(mDpy) {
+            // Get Aspect Ratio for external
+            getAspectRatioPosition(ctx, mDpy, ctx->mExtOrientation, dpos.x,
+                                    dpos.y, dpos.w, dpos.h);
+            // Calculate the actionsafe dimensions for External(dpy = 1 or 2)
+            getActionSafePosition(ctx, mDpy, dpos.x, dpos.y, dpos.w, dpos.h);
+            // Convert dim to hwc_rect_t
+            displayFrame.left = dpos.x;
+            displayFrame.top = dpos.y;
+            displayFrame.right = dpos.w + displayFrame.left;
+            displayFrame.bottom = dpos.h + displayFrame.top;
+        }
+        setMdpFlags(layer, mdpFlags, 0);
+        // For External use rotator if there is a rotation value set
+        if(mDpy && (ctx->mExtOrientation & HWC_TRANSFORM_ROT_90)) {
+            mRot = ctx->mRotMgr->getNext();
+            if(mRot == NULL) return -1;
+            //Configure rotator for pre-rotation
+            if(configRotator(mRot, info, mdpFlags, orient, 0) < 0) {
+                ALOGE("%s: configRotator Failed!", __FUNCTION__);
+                mRot = NULL;
+                return -1;
+            }
+            info.format = (mRot)->getDstFormat();
+            updateSource(orient, info, sourceCrop);
+            rotFlags |= ovutils::ROT_PREROTATED;
+        }
+        //For the mdp, since either we are pre-rotating or MDP does flips
+        orient = ovutils::OVERLAY_TRANSFORM_0;
+        transform = 0;
+
+        //XXX: FB layer plane alpha is currently sent as zero from
+        //surfaceflinger
         ovutils::PipeArgs parg(mdpFlags,
                 info,
-                ovutils::ZORDER_0,
-                ovutils::IS_FG_SET,
-                ovutils::ROT_FLAGS_NONE);
-        ov.setSource(parg, dest);
-
-        hwc_rect_t sourceCrop;
-        getNonWormholeRegion(list, sourceCrop);
-        // x,y,w,h
-        ovutils::Dim dcrop(sourceCrop.left, sourceCrop.top,
-                sourceCrop.right - sourceCrop.left,
-                sourceCrop.bottom - sourceCrop.top);
-        ov.setCrop(dcrop, dest);
-
-        int transform = layer->transform;
-        ovutils::eTransform orient =
-                static_cast<ovutils::eTransform>(transform);
-        ov.setTransform(orient, dest);
-
-        hwc_rect_t displayFrame = sourceCrop;
-        ovutils::Dim dpos(displayFrame.left,
-                displayFrame.top,
-                displayFrame.right - displayFrame.left,
-                displayFrame.bottom - displayFrame.top);
-        // Calculate the actionsafe dimensions for External(dpy = 1 or 2)
-        if(mDpy)
-            getActionSafePosition(ctx, mDpy, dpos.x, dpos.y, dpos.w, dpos.h);
-        ov.setPosition(dpos, dest);
+                z_order,
+                is_fg,
+                static_cast<ovutils::eRotFlags>(rotFlags));
 
         ret = true;
-        if (!ov.commit(dest)) {
-            ALOGE("%s: commit fails", __FUNCTION__);
+        if(configMdp(ctx->mOverlay, parg, orient, sourceCrop, displayFrame,
+                     mDest) < 0) {
+            ALOGE("%s: ConfigMdp failed for low res", __FUNCTION__);
             ret = false;
         }
     }
@@ -129,7 +189,15 @@ bool FBUpdateLowRes::draw(hwc_context_t *ctx, private_handle_t *hnd)
     bool ret = true;
     overlay::Overlay& ov = *(ctx->mOverlay);
     ovutils::eDest dest = mDest;
-    if (!ov.queueBuffer(hnd->fd, hnd->offset, dest)) {
+    int fd = hnd->fd;
+    uint32_t offset = hnd->offset;
+    if(mRot) {
+        if(!mRot->queueBuffer(fd, offset))
+            return false;
+        fd = mRot->getDstMemId();
+        offset = mRot->getDstOffset();
+    }
+    if (!ov.queueBuffer(fd, offset, dest)) {
         ALOGE("%s: queueBuffer failed for FBUpdate", __FUNCTION__);
         ret = false;
     }
@@ -143,6 +211,7 @@ inline void FBUpdateHighRes::reset() {
     IFBUpdate::reset();
     mDestLeft = ovutils::OV_INVALID;
     mDestRight = ovutils::OV_INVALID;
+    mRot = NULL;
 }
 
 bool FBUpdateHighRes::prepare(hwc_context_t *ctx, hwc_display_contents_1 *list)
@@ -164,13 +233,20 @@ bool FBUpdateHighRes::configure(hwc_context_t *ctx,
     bool ret = false;
     hwc_layer_1_t *layer = &list->hwLayers[list->numHwLayers - 1];
     if (LIKELY(ctx->mOverlay)) {
+        int extOnlyLayerIndex = ctx->listStats[mDpy].extOnlyLayerIndex;
+        // ext only layer present..
+        if(extOnlyLayerIndex != -1) {
+            layer = &list->hwLayers[extOnlyLayerIndex];
+            layer->compositionType = HWC_OVERLAY;
+        }
         overlay::Overlay& ov = *(ctx->mOverlay);
         private_handle_t *hnd = (private_handle_t *)layer->handle;
         if (!hnd) {
             ALOGE("%s:NULL private handle for layer!", __FUNCTION__);
             return false;
         }
-        ovutils::Whf info(hnd->width, hnd->height, hnd->format, hnd->size);
+        ovutils::Whf info(hnd->width, hnd->height,
+                ovutils::getMdpFormat(hnd->format), hnd->size);
 
         //Request left RGB pipe
         ovutils::eDest destL = ov.nextPipe(ovutils::OV_MDP_PIPE_RGB, mDpy);
@@ -187,11 +263,20 @@ bool FBUpdateHighRes::configure(hwc_context_t *ctx,
         mDestRight = destR;
 
         ovutils::eMdpFlags mdpFlagsL = ovutils::OV_MDP_FLAGS_NONE;
+        //If any layer has pre-multiplied alpha, set Pre multiplied
+        //Flag as the compositied output is alpha pre-multiplied.
+        if(ctx->listStats[mDpy].preMultipliedAlpha == true)
+            ovutils::setMdpFlags(mdpFlagsL, ovutils::OV_MDP_BLEND_FG_PREMULT);
+
+        ovutils::eZorder z_order =
+              ctx->mVidOv[mDpy]->isModeOn()?ovutils::ZORDER_1:ovutils::ZORDER_0;
+        ovutils::eIsFg is_fg =
+           ctx->mVidOv[mDpy]->isModeOn()? ovutils::IS_FG_OFF:ovutils::IS_FG_SET;
 
         ovutils::PipeArgs pargL(mdpFlagsL,
                 info,
-                ovutils::ZORDER_0,
-                ovutils::IS_FG_SET,
+                z_order,
+                is_fg,
                 ovutils::ROT_FLAGS_NONE);
         ov.setSource(pargL, destL);
 
@@ -199,13 +284,17 @@ bool FBUpdateHighRes::configure(hwc_context_t *ctx,
         ovutils::setMdpFlags(mdpFlagsR, ovutils::OV_MDSS_MDP_RIGHT_MIXER);
         ovutils::PipeArgs pargR(mdpFlagsR,
                 info,
-                ovutils::ZORDER_0,
-                ovutils::IS_FG_SET,
+                z_order,
+                is_fg,
                 ovutils::ROT_FLAGS_NONE);
         ov.setSource(pargR, destR);
 
-        hwc_rect_t sourceCrop;
-        getNonWormholeRegion(list, sourceCrop);
+        hwc_rect_t sourceCrop = layer->sourceCrop;
+        hwc_rect_t displayFrame = layer->displayFrame;
+        if(extOnlyLayerIndex == -1) {
+            getNonWormholeRegion(list, sourceCrop);
+            displayFrame = sourceCrop;
+        }
         ovutils::Dim dcropL(sourceCrop.left, sourceCrop.top,
                 (sourceCrop.right - sourceCrop.left) / 2,
                 sourceCrop.bottom - sourceCrop.top);
@@ -223,15 +312,18 @@ bool FBUpdateHighRes::configure(hwc_context_t *ctx,
         ov.setTransform(orient, destL);
         ov.setTransform(orient, destR);
 
-        hwc_rect_t displayFrame = sourceCrop;
         //For FB left, top will always be 0
         //That should also be the case if using 2 mixers for single display
-        ovutils::Dim dpos(displayFrame.left,
+        ovutils::Dim dposL(displayFrame.left,
                 displayFrame.top,
                 (displayFrame.right - displayFrame.left) / 2,
                 displayFrame.bottom - displayFrame.top);
-        ov.setPosition(dpos, destL);
-        ov.setPosition(dpos, destR);
+        ov.setPosition(dposL, destL);
+        ovutils::Dim dposR(0,
+                displayFrame.top,
+                (displayFrame.right - displayFrame.left) / 2,
+                displayFrame.bottom - displayFrame.top);
+        ov.setPosition(dposR, destR);
 
         ret = true;
         if (!ov.commit(destL)) {

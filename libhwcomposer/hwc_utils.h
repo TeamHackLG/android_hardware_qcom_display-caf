@@ -27,6 +27,8 @@
 #include <gr.h>
 #include <gralloc_priv.h>
 #include <utils/String8.h>
+#include "qdMetaData.h"
+#include <overlayUtils.h>
 
 #define ALIGN_TO(x, align)     (((x) + ((align)-1)) & ~((align)-1))
 #define LIKELY( exp )       (__builtin_expect( (exp) != 0, true  ))
@@ -43,8 +45,12 @@
 //Fwrd decls
 struct hwc_context_t;
 
+namespace ovutils = overlay::utils;
+
 namespace overlay {
 class Overlay;
+class Rotator;
+class RotMgr;
 }
 
 namespace qhwc {
@@ -52,6 +58,7 @@ namespace qhwc {
 class QueuedBufferStore;
 class ExternalDisplay;
 class IFBUpdate;
+class IVideoOverlay;
 class MDPComp;
 class CopyBit;
 
@@ -86,7 +93,9 @@ struct ListStats {
     //Video specific
     int yuvCount;
     int yuvIndices[MAX_NUM_LAYERS];
+    int extOnlyLayerIndex;
     bool needsAlphaScale;
+    bool preMultipliedAlpha;
 };
 
 struct LayerProp {
@@ -120,9 +129,6 @@ class LayerCache {
 
 };
 
-
-
-
 // -----------------------------------------------------------------------------
 // Utility functions - implemented in hwc_utils.cpp
 void dumpLayer(hwc_layer_1_t const* l);
@@ -148,12 +154,50 @@ void dumpsys_log(android::String8& buf, const char* fmt, ...);
 void getActionSafePosition(hwc_context_t *ctx, int dpy, uint32_t& x,
                                         uint32_t& y, uint32_t& w, uint32_t& h);
 
+
+void getAspectRatioPosition(hwc_context_t *ctx, int dpy, int orientation,
+                        uint32_t& x, uint32_t& y, uint32_t& w, uint32_t& h);
+
 //Close acquireFenceFds of all layers of incoming list
 void closeAcquireFds(hwc_display_contents_1_t* list);
 
 //Sync point impl.
 int hwc_sync(hwc_context_t *ctx, hwc_display_contents_1_t* list, int dpy,
-                                                    int fd);
+        int fd);
+
+//Trims a layer's source crop which is outside of screen boundary.
+void trimLayer(hwc_context_t *ctx, const int& dpy, const int& transform,
+        hwc_rect_t& crop, hwc_rect_t& dst);
+
+//Sets appropriate mdp flags for a layer.
+void setMdpFlags(hwc_layer_1_t *layer,
+        ovutils::eMdpFlags &mdpFlags,
+        int rotDownscale = 0);
+
+int configRotator(overlay::Rotator *rot, ovutils::Whf& whf,
+        const ovutils::eMdpFlags& mdpFlags,
+        const ovutils::eTransform& orient, const int& downscale);
+
+int configMdp(overlay::Overlay *ov, const ovutils::PipeArgs& parg,
+        const ovutils::eTransform& orient, const hwc_rect_t& crop,
+        const hwc_rect_t& pos, const ovutils::eDest& dest);
+
+void updateSource(ovutils::eTransform& orient, ovutils::Whf& whf,
+        hwc_rect_t& crop);
+
+
+
+//Routine to configure low resolution panels (<= 2048 width)
+int configureLowRes(hwc_context_t *ctx, hwc_layer_1_t *layer, const int& dpy,
+        ovutils::eMdpFlags& mdpFlags, const ovutils::eZorder& z,
+        const ovutils::eIsFg& isFg, const ovutils::eDest& dest,
+        overlay::Rotator **rot);
+
+//Routine to configure high resolution panels (> 2048 width)
+int configureHighRes(hwc_context_t *ctx, hwc_layer_1_t *layer, const int& dpy,
+        ovutils::eMdpFlags& mdpFlags, const ovutils::eZorder& z,
+        const ovutils::eIsFg& isFg, const ovutils::eDest& lDest,
+        const ovutils::eDest& rDest, overlay::Rotator **rot);
 
 // Inline utility functions
 static inline bool isSkipLayer(const hwc_layer_1_t* l) {
@@ -241,9 +285,12 @@ struct hwc_context_t {
 
     //Overlay object - NULL for non overlay devices
     overlay::Overlay *mOverlay;
+    //Holds a few rot objects
+    overlay::RotMgr *mRotMgr;
 
     //Primary and external FB updater
     qhwc::IFBUpdate *mFBUpdate[MAX_DISPLAYS];
+    qhwc::IVideoOverlay *mVidOv[MAX_DISPLAYS];
     // External display related information
     qhwc::ExternalDisplay *mExtDisplay;
     qhwc::MDPInfo mMDP;
@@ -269,8 +316,11 @@ struct hwc_context_t {
     bool mDMAInUse;
     //Check if base pipe is set up
     bool mBasePipeSetup;
+    // External Orientation
+    int mExtOrientation;
 };
 
+namespace qhwc {
 static inline bool isSkipPresent (hwc_context_t *ctx, int dpy) {
     return  ctx->listStats[dpy].skipCount;
 }
@@ -278,5 +328,6 @@ static inline bool isSkipPresent (hwc_context_t *ctx, int dpy) {
 static inline bool isYuvPresent (hwc_context_t *ctx, int dpy) {
     return  ctx->listStats[dpy].yuvCount;
 }
+};
 
 #endif //HWC_UTILS_H

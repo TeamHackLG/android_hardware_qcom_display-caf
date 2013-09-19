@@ -27,6 +27,7 @@
 #include <utils/Trace.h>
 #include <sys/ioctl.h>
 #include <overlay.h>
+#include <overlayRotator.h>
 #include <mdp_version.h>
 #include "hwc_utils.h"
 #include "hwc_video.h"
@@ -99,11 +100,11 @@ static void reset(hwc_context_t *ctx, int numDisplays,
 
         if(ctx->mFBUpdate[i])
             ctx->mFBUpdate[i]->reset();
-
+        if(ctx->mVidOv[i])
+            ctx->mVidOv[i]->reset();
         if(ctx->mCopyBit[i])
             ctx->mCopyBit[i]->reset();
     }
-    VideoOverlay::reset();
 }
 
 //clear prev layer prop flags and realloc for current frame
@@ -149,7 +150,7 @@ static int hwc_prepare_primary(hwc_composer_device_1 *dev,
             int ret = ctx->mMDPComp->prepare(ctx, list);
             if(!ret) {
                 // IF MDPcomp fails use this route
-                VideoOverlay::prepare(ctx, list, dpy);
+                ctx->mVidOv[dpy]->prepare(ctx, list);
                 ctx->mFBUpdate[dpy]->prepare(ctx, list);
             }
             ctx->mLayerCache[dpy]->updateLayerCache(list);
@@ -174,7 +175,7 @@ static int hwc_prepare_external(hwc_composer_device_1 *dev,
             if(fbLayer->handle) {
                 setListStats(ctx, list, dpy);
                 reset_layer_prop(ctx, dpy);
-                VideoOverlay::prepare(ctx, list, dpy);
+                ctx->mVidOv[dpy]->prepare(ctx, list);
                 ctx->mFBUpdate[dpy]->prepare(ctx, list);
                 ctx->mLayerCache[dpy]->updateLayerCache(list);
                 if(ctx->mCopyBit[dpy])
@@ -201,6 +202,7 @@ static int hwc_prepare(hwc_composer_device_1 *dev, size_t numDisplays,
     reset(ctx, numDisplays, displays);
 
     ctx->mOverlay->configBegin();
+    ctx->mRotMgr->configBegin();
 
     for (int32_t i = numDisplays; i >= 0; i--) {
         hwc_display_contents_1_t *list = displays[i];
@@ -218,6 +220,8 @@ static int hwc_prepare(hwc_composer_device_1 *dev, size_t numDisplays,
     }
 
     ctx->mOverlay->configDone();
+    ctx->mRotMgr->configDone();
+
     return ret;
 }
 
@@ -258,6 +262,7 @@ static int hwc_blank(struct hwc_composer_device_1* dev, int dpy, int blank)
                 ctx->mOverlay->configBegin();
                 ctx->mOverlay->configDone();
                 ret = ioctl(ctx->dpyAttr[dpy].fd, FBIOBLANK,FB_BLANK_POWERDOWN);
+                ctx->mRotMgr->clear();
             } else {
                 ret = ioctl(ctx->dpyAttr[dpy].fd, FBIOBLANK, FB_BLANK_UNBLANK);
             }
@@ -329,12 +334,12 @@ static int hwc_set_primary(hwc_context_t *ctx, hwc_display_contents_1_t* list) {
             copybitDone = ctx->mCopyBit[dpy]->draw(ctx, list, dpy, &fd);
         if(list->numHwLayers > 1)
             hwc_sync(ctx, list, dpy, fd);
-        if (!VideoOverlay::draw(ctx, list, dpy)) {
-            ALOGE("%s: VideoOverlay::draw fail!", __FUNCTION__);
+        if (!ctx->mVidOv[dpy]->draw(ctx, list)) {
+            ALOGE("%s: VideoOverlay draw failed", __FUNCTION__);
             ret = -1;
         }
         if (!ctx->mMDPComp->draw(ctx, list)) {
-            ALOGE("%s: MDPComp::draw fail!", __FUNCTION__);
+            ALOGE("%s: MDPComp draw failed", __FUNCTION__);
             ret = -1;
         }
 
@@ -350,7 +355,7 @@ static int hwc_set_primary(hwc_context_t *ctx, hwc_display_contents_1_t* list) {
             if(!(fbLayer->flags & HWC_SKIP_LAYER) &&
                 (list->numHwLayers > 1)) {
                 if (!ctx->mFBUpdate[dpy]->draw(ctx, hnd)) {
-                    ALOGE("%s: FBUpdate::draw fail!", __FUNCTION__);
+                    ALOGE("%s: FBUpdate draw failed", __FUNCTION__);
                     ret = -1;
                 }
             }
@@ -386,13 +391,19 @@ static int hwc_set_external(hwc_context_t *ctx,
         if(list->numHwLayers > 1)
             hwc_sync(ctx, list, dpy, fd);
 
-        if (!VideoOverlay::draw(ctx, list, dpy)) {
+        if (!ctx->mVidOv[dpy]->draw(ctx, list)) {
             ALOGE("%s: VideoOverlay::draw fail!", __FUNCTION__);
             ret = -1;
         }
 
-        private_handle_t *hnd = NULL;
-        if(copybitDone) {
+        int extOnlyLayerIndex =
+            ctx->listStats[dpy].extOnlyLayerIndex;
+
+        private_handle_t *hnd = (private_handle_t *)fbLayer->handle;
+        if(extOnlyLayerIndex!= -1) {
+            hwc_layer_1_t *extLayer = &list->hwLayers[extOnlyLayerIndex];
+            hnd = (private_handle_t *)extLayer->handle;
+        } else if(copybitDone) {
             hnd = ctx->mCopyBit[dpy]->getCurrentRenderBuffer();
         } else {
             hnd = (private_handle_t *)fbLayer->handle;
@@ -400,7 +411,7 @@ static int hwc_set_external(hwc_context_t *ctx,
 
         if(fbLayer->compositionType == HWC_FRAMEBUFFER_TARGET &&
                 !(fbLayer->flags & HWC_SKIP_LAYER) && hnd &&
-                (list->numHwLayers > 1)) {
+                (list->numHwLayers > 1) && !isYuvBuffer(hnd)) {
             if (!ctx->mFBUpdate[dpy]->draw(ctx, hnd)) {
                 ALOGE("%s: FBUpdate::draw fail!", __FUNCTION__);
                 ret = -1;
@@ -535,6 +546,9 @@ void hwc_dump(struct hwc_composer_device_1* dev, char *buff, int buff_len)
     ctx->mMDPComp->dump(aBuf);
     char ovDump[2048] = {'\0'};
     ctx->mOverlay->getDump(ovDump, 2048);
+    dumpsys_log(aBuf, ovDump);
+    ovDump[0] = '\0';
+    ctx->mRotMgr->getDump(ovDump, 2048);
     dumpsys_log(aBuf, ovDump);
     strlcpy(buff, aBuf.string(), buff_len);
 }

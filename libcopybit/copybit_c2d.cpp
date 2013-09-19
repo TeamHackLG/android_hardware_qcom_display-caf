@@ -1315,8 +1315,7 @@ static int stretch_copybit_internal(
         return COPYBIT_FAILURE;
     }
 
-    src_surface.config_mask = C2D_NO_BILINEAR_BIT | C2D_NO_ANTIALIASING_BIT |
-                              ctx->config_mask;
+    src_surface.config_mask = C2D_NO_ANTIALIASING_BIT | ctx->config_mask;
     src_surface.global_alpha = ctx->src_global_alpha;
     if (enableBlend) {
         if(src_surface.config_mask & C2D_GLOBAL_ALPHA_BIT) {
@@ -1329,12 +1328,6 @@ static int stretch_copybit_internal(
                 unmap_gpuaddr(ctx, mapped_src_idx);
                 return COPYBIT_FAILURE;
             }
-        } else {
-            int c2d_format = get_format(src->format);
-            if(is_alpha(c2d_format))
-                src_surface.config_mask &= ~C2D_ALPHA_BLEND_NONE;
-            else
-                src_surface.config_mask |= C2D_ALPHA_BLEND_NONE;
         }
     } else {
         src_surface.config_mask |= C2D_ALPHA_BLEND_NONE;
