@@ -54,6 +54,7 @@ enum {
      * cannot be used with noncontiguous heaps */
     GRALLOC_USAGE_PRIVATE_UNCACHED        =       0x02000000,
 
+#ifdef QCOM_BSP_WITH_GENLOCK
     /* This flag can be set to disable genlock synchronization
      * for the gralloc buffer. If this flag is set the caller
      * is required to perform explicit synchronization.
@@ -61,6 +62,7 @@ enum {
      * and may need to be moved if the gralloc API changes
      */
     GRALLOC_USAGE_PRIVATE_UNSYNCHRONIZED  =       0X04000000,
+#endif
 
     /* Buffer content should be displayed on an primary display only */
     GRALLOC_USAGE_PRIVATE_INTERNAL_ONLY   =       0x04000000,
@@ -177,8 +179,10 @@ struct private_handle_t : public native_handle {
 
         // file-descriptors
         int     fd;
+#ifdef QCOM_BSP_WITH_GENLOCK
         // genlock handle to be dup'd by the binder
         int     genlockHandle;
+#endif
         int     fd_metadata;          // fd for the meta-data
         // ints
         int     magic;
@@ -196,23 +200,36 @@ struct private_handle_t : public native_handle {
         // The gpu address mapped into the mmu.
         // If using ashmem, set to 0, they don't care
         int     gpuaddr;
+#ifdef QCOM_BSP_WITH_GENLOCK
         int     pid;   // deprecated
+#endif
         int     format;
         int     width;
         int     height;
+#ifdef QCOM_BSP_WITH_GENLOCK
         // local fd of the genlock device.
         int     genlockPrivFd;
+#endif
         int     base_metadata;
 
 #ifdef __cplusplus
+#ifdef QCOM_BSP_WITH_GENLOCK
         static const int sNumInts = 14;
         static const int sNumFds = 3;
+#else
+        static const int sNumInts = 12;
+        static const int sNumFds = 2;
+#endif
         static const int sMagic = 'gmsm';
 
         private_handle_t(int fd, int size, int flags, int bufferType,
                          int format,int width, int height, int eFd = -1,
                          int eOffset = 0, int eBase = 0) :
-            fd(fd), genlockHandle(-1), fd_metadata(eFd), magic(sMagic),
+            fd(fd), 
+#ifdef QCOM_BSP_WITH_GENLOCK
+            genlockHandle(-1),
+#endif 
+            fd_metadata(eFd), magic(sMagic),
             flags(flags),
 #ifdef QCOM_BSP_CAMERA_ABI_HACK
             bufferType(bufferType),
@@ -221,8 +238,14 @@ struct private_handle_t : public native_handle {
 #ifndef QCOM_BSP_CAMERA_ABI_HACK
             bufferType(bufferType),
 #endif
-            base(0), offset_metadata(eOffset), gpuaddr(0), pid(getpid()),
-            format(format), width(width), height(height), genlockPrivFd(-1),
+            base(0), offset_metadata(eOffset), gpuaddr(0), 
+#ifdef QCOM_BSP_WITH_GENLOCK
+            pid(getpid()),
+#endif
+            format(format), width(width), height(height), 
+#ifdef QCOM_BSP_WITH_GENLOCK
+            genlockPrivFd(-1),
+#endif
             base_metadata(eBase)
         {
             version = sizeof(native_handle);

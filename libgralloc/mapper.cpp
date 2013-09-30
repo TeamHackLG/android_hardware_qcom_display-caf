@@ -34,8 +34,9 @@
 
 #include <hardware/hardware.h>
 #include <hardware/gralloc.h>
+#ifdef QCOM_BSP_WITH_GENLOCK
 #include <genlock.h>
-
+#endif
 #include <linux/android_pmem.h>
 
 #include "gralloc_priv.h"
@@ -149,7 +150,7 @@ int gralloc_register_buffer(gralloc_module_t const* module,
         ALOGE("%s: gralloc_map failed", __FUNCTION__);
         return err;
     }
-
+#ifdef QCOM_BSP_WITH_GENLOCK
     // Reset the genlock private fd flag in the handle
     hnd->genlockPrivFd = -1;
 
@@ -168,6 +169,7 @@ int gralloc_register_buffer(gralloc_module_t const* module,
         hnd->base = 0;
         return -EINVAL;
     }
+#endif
 
     return 0;
 }
@@ -191,6 +193,7 @@ int gralloc_unregister_buffer(gralloc_module_t const* module,
     }
     hnd->base = 0;
     hnd->base_metadata = 0;
+#ifdef QCOM_BSP_WITH_GENLOCK
     // Release the genlock
     if (-1 != hnd->genlockHandle) {
         return genlock_release_lock((native_handle_t *)handle);
@@ -198,6 +201,7 @@ int gralloc_unregister_buffer(gralloc_module_t const* module,
         ALOGE("%s: there was no genlock attached to this buffer", __FUNCTION__);
         return -EINVAL;
     }
+#endif
     return 0;
 }
 
@@ -243,7 +247,7 @@ static int gralloc_map_and_invalidate (gralloc_module_t const* module,
             err = gralloc_map(module, handle);
             pthread_mutex_unlock(lock);
         }
-
+#ifdef QCOM_BSP_WITH_GENLOCK
         // Lock the buffer for read/write operation as specified. Write lock
         // has a higher priority over read lock.
         int lockType = 0;
@@ -264,6 +268,7 @@ static int gralloc_map_and_invalidate (gralloc_module_t const* module,
             // Mark this buffer as locked for SW read/write operation.
             hnd->flags |= private_handle_t::PRIV_FLAGS_SW_LOCK;
         }
+#endif
          if (hnd->flags & private_handle_t::PRIV_FLAGS_USES_ION) {
             //Invalidate if reading in software. No need to do this for the
             //metadata buffer as it is only read/written in software.
@@ -350,7 +355,7 @@ int gralloc_unlock(gralloc_module_t const* module,
                                          CACHE_INVALIDATE);
         }
     }
-
+#ifdef QCOM_BSP_WITH_GENLOCK
     if ((hnd->flags & private_handle_t::PRIV_FLAGS_SW_LOCK)) {
         // Unlock the buffer.
         if (GENLOCK_NO_ERROR != genlock_unlock_buffer((native_handle_t *)handle)) {
@@ -359,7 +364,7 @@ int gralloc_unlock(gralloc_module_t const* module,
         } else
             hnd->flags &= ~private_handle_t::PRIV_FLAGS_SW_LOCK;
     }
-
+#endif
     return err;
 }
 

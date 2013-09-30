@@ -39,7 +39,9 @@
 #include "gralloc_priv.h"
 #include "fb_priv.h"
 #include "gr.h"
+#ifdef QCOM_BSP_WITH_GENLOCK
 #include <genlock.h>
+#endif
 #include <cutils/properties.h>
 #include <profiler.h>
 
