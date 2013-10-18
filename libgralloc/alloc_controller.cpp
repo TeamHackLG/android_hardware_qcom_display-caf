@@ -49,10 +49,12 @@
 #define ION_ADSP_HEAP_ID ION_CAMERA_HEAP_ID
 #endif
 
+namespace android {
+ANDROID_SINGLETON_STATIC_INSTANCE(AdrenoMemInfo);
+}
+
 using namespace gralloc;
 using namespace qdutils;
-
-ANDROID_SINGLETON_STATIC_INSTANCE(AdrenoMemInfo);
 
 //Common functions
 static bool canFallback(int usage, bool triedSystem)
