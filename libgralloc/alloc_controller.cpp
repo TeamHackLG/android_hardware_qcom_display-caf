@@ -191,12 +191,6 @@ IAllocController* IAllocController::getInstance(void)
 IonController::IonController()
 {
     mIonAlloc = new IonAlloc();
-    mUseTZProtection = false;
-    char property[PROPERTY_VALUE_MAX];
-    if ((property_get("persist.gralloc.cp.level3", property, NULL) <= 0) ||
-                            (atoi(property) != 1)) {
-        mUseTZProtection = true;
-    }
 }
 
 int IonController::allocate(alloc_data& data, int usage)
@@ -230,7 +224,7 @@ int IonController::allocate(alloc_data& data, int usage)
 
 #ifdef SECURE_MM_HEAP
     if(usage & GRALLOC_USAGE_PROTECTED) {
-        if ((mUseTZProtection) && (usage & GRALLOC_USAGE_PRIVATE_MM_HEAP)) {
+        if (usage & GRALLOC_USAGE_PRIVATE_MM_HEAP) {
             ionFlags |= ION_HEAP(ION_CP_MM_HEAP_ID);
             ionFlags |= ION_SECURE;
         } else {
