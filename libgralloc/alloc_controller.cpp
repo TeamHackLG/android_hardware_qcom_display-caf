@@ -30,7 +30,6 @@
 #include <cutils/log.h>
 #include <fcntl.h>
 #include <dlfcn.h>
-#include <graphics.h>
 #include "gralloc_priv.h"
 #include "alloc_controller.h"
 #include "memalloc.h"
