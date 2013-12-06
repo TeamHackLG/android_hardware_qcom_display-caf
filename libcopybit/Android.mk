@@ -44,9 +44,5 @@ else
             LOCAL_SRC_FILES := software_converter.cpp copybit.cpp
             include $(BUILD_SHARED_LIBRARY)
         endif
-    ifeq ($(call is-board-platform-in-list,msm7x27a),true)
-            LOCAL_SRC_FILES := software_converter.cpp copybit.cpp
-            include $(BUILD_SHARED_LIBRARY)
-        endif
     endif
 endif
