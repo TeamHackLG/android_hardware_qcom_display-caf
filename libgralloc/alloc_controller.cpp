@@ -204,8 +204,10 @@ int IonController::allocate(alloc_data& data, int usage)
     if(usage & GRALLOC_USAGE_PRIVATE_SYSTEM_HEAP)
         ionFlags |= ION_HEAP(ION_SYSTEM_HEAP_ID);
 
+#ifndef NO_IOMMU
     if(usage & GRALLOC_USAGE_PRIVATE_IOMMU_HEAP)
         ionFlags |= ION_HEAP(ION_IOMMU_HEAP_ID);
+#endif
 
     if(usage & GRALLOC_USAGE_PROTECTED) {
         if ((mUseTZProtection) && (usage & GRALLOC_USAGE_PRIVATE_MM_HEAP)) {
@@ -235,8 +237,14 @@ int IonController::allocate(alloc_data& data, int usage)
     // SF + IOMMU heaps, so that bypass can work
     // we can fall back to system heap if
     // we run out.
-    if(!ionFlags)
-        ionFlags = ION_HEAP(ION_SF_HEAP_ID) | ION_HEAP(ION_IOMMU_HEAP_ID);
+    if(!ionFlags) {
+        ionFlags = ION_HEAP(ION_SF_HEAP_ID);
+#ifdef NO_IOMMU
+        ionFlags |= ION_HEAP(ION_CP_MM_HEAP_ID);
+#else
+        ionFlags |= ION_HEAP(ION_IOMMU_HEAP_ID);
+#endif
+    }
 
     data.flags = ionFlags;
     ret = mIonAlloc->alloc_buffer(data);
