@@ -49,7 +49,7 @@ endif
 common_deps += $(TARGET_OUT_INTERMEDIATES)/KERNEL_OBJ/usr
 kernel_includes += $(TARGET_OUT_INTERMEDIATES)/KERNEL_OBJ/usr/include
 
-ifeq ($(TARGET_BOARD_PLATFORM),msm8660)
+ifneq ($(filter msm8660 msm7x27a,$(TARGET_BOARD_PLATFORM)),)
     common_flags += -DNO_IOMMU
 endif
 
