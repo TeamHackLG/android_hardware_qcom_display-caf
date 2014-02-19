@@ -440,6 +440,14 @@ bool MDPComp::isFullFrameDoable(hwc_context_t *ctx,
         hwc_layer_1_t* layer = &list->hwLayers[i];
         private_handle_t *hnd = (private_handle_t *)layer->handle;
 
+        if((layer->planeAlpha < 0xFF) &&
+                qhwc::needsScaling(ctx,layer,mDpy)){
+            ALOGD_IF(isDebug(),
+                "%s: Disable mixed mode if frame needs plane alpha downscaling",
+                __FUNCTION__);
+            return false;
+        }
+
         if(isYuvBuffer(hnd) ) {
             if(isSecuring(ctx, layer)) {
                 ALOGD_IF(isDebug(), "%s: MDP securing is active", __FUNCTION__);
@@ -860,6 +868,7 @@ int MDPComp::prepare(hwc_context_t *ctx, hwc_display_contents_1_t* list) {
                         mCurrentFrame.fbZ)) {
                 ALOGE("%s configure framebuffer failed", __func__);
                 reset(numLayers, list);
+                ctx->mOverlay->clear(mDpy);
                 return -1;
             } else { //Success
                 //Any change in composition types needs an FB refresh
@@ -879,6 +888,8 @@ int MDPComp::prepare(hwc_context_t *ctx, hwc_display_contents_1_t* list) {
         //Acquire and Program MDP pipes
         if(!programMDP(ctx, list)) {
             reset(numLayers, list);
+            ctx->mOverlay->clear(mDpy);
+            ctx->mLayerRotMap[mDpy]->clear();
             return -1;
         } else { //Success
             //Any change in composition types needs an FB refresh
@@ -909,11 +920,14 @@ int MDPComp::prepare(hwc_context_t *ctx, hwc_display_contents_1_t* list) {
             if(!ctx->mFBUpdate[mDpy]->prepare(ctx, list, mCurrentFrame.fbZ)) {
                 ALOGE("%s configure framebuffer failed", __func__);
                 reset(numLayers, list);
+                ctx->mOverlay->clear(mDpy);
                 return -1;
             }
         }
         if(!programYUV(ctx, list)) {
             reset(numLayers, list);
+            ctx->mOverlay->clear(mDpy);
+            ctx->mLayerRotMap[mDpy]->clear();
             return -1;
         }
     } else {

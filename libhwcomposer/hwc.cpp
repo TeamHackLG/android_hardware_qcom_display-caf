@@ -32,6 +32,7 @@
 #include "hwc_utils.h"
 #include "hwc_fbupdate.h"
 #include "hwc_mdpcomp.h"
+#include "hwc_dump_layers.h"
 #include "external.h"
 #include "hwc_copybit.h"
 #include "profiler.h"
@@ -498,6 +499,9 @@ static int hwc_set_primary(hwc_context_t *ctx, hwc_display_contents_1_t* list) {
         if(list->numHwLayers > 1)
             hwc_sync(ctx, list, dpy, fd);
 
+        // Dump the layers for primary
+        if(ctx->mHwcDebug[dpy])
+            ctx->mHwcDebug[dpy]->dumpLayers(list);
 
         if (!ctx->mMDPComp[dpy]->draw(ctx, list)) {
             ALOGE("%s: MDPComp draw failed", __FUNCTION__);
@@ -507,7 +511,7 @@ static int hwc_set_primary(hwc_context_t *ctx, hwc_display_contents_1_t* list) {
         //TODO We dont check for SKIP flag on this layer because we need PAN
         //always. Last layer is always FB
         private_handle_t *hnd = (private_handle_t *)fbLayer->handle;
-        if(copybitDone) {
+        if(copybitDone && ctx->mMDP.version > qdutils::MDP_V4_3) {
             hnd = ctx->mCopyBit[dpy]->getCurrentRenderBuffer();
         }
 
@@ -550,6 +554,9 @@ static int hwc_set_external(hwc_context_t *ctx,
         if(list->numHwLayers > 1)
             hwc_sync(ctx, list, dpy, fd);
 
+        // Dump the layers for external
+        if(ctx->mHwcDebug[dpy])
+            ctx->mHwcDebug[dpy]->dumpLayers(list);
 
         if (!ctx->mMDPComp[dpy]->draw(ctx, list)) {
             ALOGE("%s: MDPComp draw failed", __FUNCTION__);
@@ -563,7 +570,7 @@ static int hwc_set_external(hwc_context_t *ctx,
         if(extOnlyLayerIndex!= -1) {
             hwc_layer_1_t *extLayer = &list->hwLayers[extOnlyLayerIndex];
             hnd = (private_handle_t *)extLayer->handle;
-        } else if(copybitDone) {
+        } else if(copybitDone && ctx->mMDP.version > qdutils::MDP_V4_3) {
             hnd = ctx->mCopyBit[dpy]->getCurrentRenderBuffer();
         }
 
