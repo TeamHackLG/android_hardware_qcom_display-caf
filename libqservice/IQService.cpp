@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2010 The Android Open Source Project
- * Copyright (C) 2012-2013, The Linux Foundation. All rights reserved.
+ * Copyright (C) 2012, The Linux Foundation. All rights reserved.
  *
  * Not a Contribution, Apache license notifications and license are
  * retained for attribution purposes only.
@@ -27,12 +27,10 @@
 #include <binder/IPCThreadState.h>
 #include <utils/Errors.h>
 #include <private/android_filesystem_config.h>
+
 #include <IQService.h>
 
-#define QSERVICE_DEBUG 0
-
 using namespace android;
-using namespace qClient;
 
 // ---------------------------------------------------------------------------
 
@@ -44,25 +42,18 @@ public:
     BpQService(const sp<IBinder>& impl)
         : BpInterface<IQService>(impl) {}
 
-    virtual void connect(const sp<IQClient>& client) {
-        ALOGD_IF(QSERVICE_DEBUG, "%s: connect client", __FUNCTION__);
+    virtual void securing(uint32_t startEnd) {
         Parcel data, reply;
         data.writeInterfaceToken(IQService::getInterfaceDescriptor());
-        data.writeStrongBinder(client->asBinder());
-        remote()->transact(CONNECT, data, &reply);
+        data.writeInt32(startEnd);
+        remote()->transact(SECURING, data, &reply);
     }
 
-    virtual android::status_t dispatch(uint32_t command, const Parcel* inParcel,
-            Parcel* outParcel) {
-        ALOGD_IF(QSERVICE_DEBUG, "%s: dispatch in:%p", __FUNCTION__, inParcel);
-        status_t err = android::FAILED_TRANSACTION;
-        Parcel data;
-        Parcel *reply = outParcel;
+    virtual void unsecuring(uint32_t startEnd) {
+        Parcel data, reply;
         data.writeInterfaceToken(IQService::getInterfaceDescriptor());
-        if (inParcel && inParcel->dataSize() > 0)
-            data.appendFrom(inParcel, 0, inParcel->dataSize());
-        err = remote()->transact(command, data, reply);
-        return err;
+        data.writeInt32(startEnd);
+        remote()->transact(UNSECURING, data, &reply);
     }
 };
 
@@ -75,8 +66,7 @@ static void getProcName(int pid, char *buf, int size);
 status_t BnQService::onTransact(
     uint32_t code, const Parcel& data, Parcel* reply, uint32_t flags)
 {
-    ALOGD_IF(QSERVICE_DEBUG, "%s: code: %d", __FUNCTION__, code);
-    // IPC should be from certain processes only
+    // IPC should be from mediaserver only
     IPCThreadState* ipc = IPCThreadState::self();
     const int callerPid = ipc->getCallingPid();
     const int callerUid = ipc->getCallingUid();
@@ -85,36 +75,33 @@ status_t BnQService::onTransact(
 
     getProcName(callerPid, callingProcName, MAX_BUF_SIZE);
 
-    const bool permission = (callerUid == AID_MEDIA ||
-            callerUid == AID_GRAPHICS ||
-            callerUid == AID_ROOT ||
-            callerUid == AID_SYSTEM);
+    const bool permission = (callerUid == AID_MEDIA);
 
-    if (code == CONNECT) {
-        CHECK_INTERFACE(IQService, data, reply);
-        if(callerUid != AID_GRAPHICS) {
-            ALOGE("display.qservice CONNECT access denied: \
-                    pid=%d uid=%d process=%s",
-                    callerPid, callerUid, callingProcName);
-            return PERMISSION_DENIED;
-        }
-        sp<IQClient> client =
-                interface_cast<IQClient>(data.readStrongBinder());
-        connect(client);
-        return NO_ERROR;
-    } else if (code > COMMAND_LIST_START && code < COMMAND_LIST_END) {
-        if(!permission) {
-            ALOGE("display.qservice access denied: command=%d\
-                  pid=%d uid=%d process=%s", code, callerPid,
-                   callerUid, callingProcName);
-	    return PERMISSION_DENIED;
-	}
-	CHECK_INTERFACE(IQService, data, reply);
-        dispatch(code, &data, reply);
-        return NO_ERROR;
-    } else {
-        return BBinder::onTransact(code, data, reply, flags);
-
+    switch(code) {
+        case SECURING: {
+            if(!permission) {
+                ALOGE("display.qservice SECURING access denied: pid=%d uid=%d process=%s",
+                      callerPid, callerUid, callingProcName);
+                return PERMISSION_DENIED;
+            }
+            CHECK_INTERFACE(IQService, data, reply);
+            uint32_t startEnd = data.readInt32();
+            securing(startEnd);
+            return NO_ERROR;
+        } break;
+        case UNSECURING: {
+            if(!permission) {
+                ALOGE("display.qservice UNSECURING access denied: pid=%d uid=%d process=%s",
+                      callerPid, callerUid, callingProcName);
+                return PERMISSION_DENIED;
+            }
+            CHECK_INTERFACE(IQService, data, reply);
+            uint32_t startEnd = data.readInt32();
+            unsecuring(startEnd);
+            return NO_ERROR;
+        } break;
+        default:
+            return BBinder::onTransact(code, data, reply, flags);
     }
 }
 

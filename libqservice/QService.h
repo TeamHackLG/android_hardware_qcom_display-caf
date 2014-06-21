@@ -1,5 +1,5 @@
 /*
- *  Copyright (c) 2012-2013, The Linux Foundation. All rights reserved.
+ *  Copyright (c) 2012, The Linux Foundation. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are
@@ -10,7 +10,7 @@
  *       copyright notice, this list of conditions and the following
  *       disclaimer in the documentation and/or other materials provided
  *       with the distribution.
- *     * Neither the name of The Linux Foundation nor the names of its
+ *     * Neither the name of Code Aurora Forum, Inc. nor the names of its
  *       contributors may be used to endorse or promote products derived
  *       from this software without specific prior written permission.
  *
@@ -35,7 +35,6 @@
 #include <cutils/log.h>
 #include <binder/IServiceManager.h>
 #include <IQService.h>
-#include <IQClient.h>
 
 struct hwc_context_t;
 
@@ -45,15 +44,13 @@ namespace qService {
 class QService : public BnQService {
 public:
     virtual ~QService();
-    virtual void connect(const android::sp<qClient::IQClient>& client);
-    virtual android::status_t dispatch(uint32_t command,
-            const android::Parcel* data,
-            android::Parcel* reply);
-    static void init();
+    virtual void securing(uint32_t startEnd);
+    virtual void unsecuring(uint32_t startEnd);
+    static QService* getInstance(hwc_context_t *ctx);
 private:
-    QService();
-    android::sp<qClient::IQClient> mClient;
+    QService(hwc_context_t *ctx);
     static QService *sQService;
+    hwc_context_t *mHwcContext;
 };
 }; // namespace qService
 #endif // ANDROID_QSERVICE_H

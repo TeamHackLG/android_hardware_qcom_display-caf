@@ -1,5 +1,5 @@
 /*
- *  Copyright (c) 2012-2013, The Linux Foundation. All rights reserved.
+ *  Copyright (c) 2012, The Linux Foundation. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are
@@ -10,7 +10,7 @@
  *       copyright notice, this list of conditions and the following
  *       disclaimer in the documentation and/or other materials provided
  *       with the distribution.
- *     * Neither the name of The Linux Foundation nor the names of its
+ *     * Neither the name of Code Aurora Forum, Inc. nor the names of its
  *       contributors may be used to endorse or promote products derived
  *       from this software without specific prior written permission.
  *
@@ -28,6 +28,7 @@
  */
 
 #include <QService.h>
+#include <hwc_utils.h>
 
 #define QSERVICE_DEBUG 0
 
@@ -37,7 +38,7 @@ namespace qService {
 
 QService* QService::sQService = NULL;
 // ----------------------------------------------------------------------------
-QService::QService()
+QService::QService(hwc_context_t *ctx):mHwcContext(ctx)
 {
     ALOGD_IF(QSERVICE_DEBUG, "QService Constructor invoked");
 }
@@ -47,25 +48,28 @@ QService::~QService()
     ALOGD_IF(QSERVICE_DEBUG,"QService Destructor invoked");
 }
 
-void QService::connect(const sp<qClient::IQClient>& client) {
-    ALOGD_IF(QSERVICE_DEBUG,"client connected");
-    mClient = client;
+void QService::securing(uint32_t startEnd) {
+    mHwcContext->mSecuring = startEnd;
+    //We're done securing
+    if(startEnd == END)
+        mHwcContext->mSecureMode = true;
+    if(mHwcContext->proc)
+        mHwcContext->proc->invalidate(mHwcContext->proc);
 }
 
-status_t QService::dispatch(uint32_t command, const Parcel* inParcel,
-        Parcel* outParcel) {
-    status_t err = FAILED_TRANSACTION;
-    if (mClient.get()) {
-        ALOGD_IF(QSERVICE_DEBUG, "Dispatching command: %d", command);
-        err = mClient->notifyCallback(command, inParcel, outParcel);
-    }
-    return err;
+void QService::unsecuring(uint32_t startEnd) {
+    mHwcContext->mSecuring = startEnd;
+    //We're done unsecuring
+    if(startEnd == END)
+        mHwcContext->mSecureMode = false;
+    if(mHwcContext->proc)
+        mHwcContext->proc->invalidate(mHwcContext->proc);
 }
 
-void QService::init()
+QService* QService::getInstance(hwc_context_t *ctx)
 {
     if(!sQService) {
-        sQService = new QService();
+        sQService = new QService(ctx);
         sp<IServiceManager> sm = defaultServiceManager();
         sm->addService(String16("display.qservice"), sQService);
         if(sm->checkService(String16("display.qservice")) != NULL)
@@ -73,6 +77,7 @@ void QService::init()
         else
             ALOGD_IF(QSERVICE_DEBUG, "adding display.qservice failed");
     }
+    return sQService;
 }
 
 }

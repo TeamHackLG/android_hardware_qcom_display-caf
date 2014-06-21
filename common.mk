@@ -7,7 +7,6 @@ common_includes += hardware/qcom/display-caf/libqdutils
 common_includes += hardware/qcom/display-caf/libhwcomposer
 common_includes += hardware/qcom/display-caf/libexternal
 common_includes += hardware/qcom/display-caf/libqservice
-common_includes += hardware/qcom/display-caf/libvirtual
 
 ifeq ($(TARGET_USES_POST_PROCESSING),true)
     common_flags     += -DUSES_POST_PROCESSING
@@ -53,3 +52,6 @@ ifneq ($(filter msm8660 msm7x27a,$(TARGET_BOARD_PLATFORM)),)
     common_flags += -DNO_IOMMU
 endif
 
+ifeq ($(TARGET_DISPLAY_USE_RETIRE_FENCE),true)
+    common_flags += -DUSE_RETIRE_FENCE
+endif

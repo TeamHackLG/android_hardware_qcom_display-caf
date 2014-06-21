@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2011, The Linux Foundation. All rights reserved.
+* Copyright (c) 2011, Code Aurora Forum. All rights reserved.
 *
 * Redistribution and use in source and binary forms, with or without
 * modification, are permitted provided that the following conditions are
@@ -10,7 +10,7 @@
 *      copyright notice, this list of conditions and the following
 *      disclaimer in the documentation and/or other materials provided
 *      with the distribution.
-*    * Neither the name of The Linux Foundation nor the names of its
+*    * Neither the name of Code Aurora Forum, Inc. nor the names of its
 *      contributors may be used to endorse or promote products derived
 *      from this software without specific prior written permission.
 *
@@ -77,9 +77,6 @@ bool play(int fd, msmfb_overlay_data& od);
 
 /* MSMFB_OVERLAY_3D */
 bool set3D(int fd, msmfb_overlay_3d& ov);
-
-/* MSMFB_DISPLAY_COMMIT */
-bool displayCommit(int fd);
 
 /* the following are helper functions for dumping
  * msm_mdp and friends*/
@@ -155,7 +152,7 @@ inline bool setOverlay(int fd, mdp_overlay& ov) {
     return true;
 }
 
-inline bool endRotator(int fd, uint32_t sessionId) {
+inline bool endRotator(int fd, int sessionId) {
     if (ioctl(fd, MSM_ROTATOR_IOCTL_FINISH, &sessionId) < 0) {
         ALOGE("Failed to call ioctl MSM_ROTATOR_IOCTL_FINISH err=%s",
                 strerror(errno));
@@ -200,15 +197,6 @@ inline bool set3D(int fd, msmfb_overlay_3d& ov) {
     return true;
 }
 
-inline bool displayCommit(int fd, mdp_display_commit& info) {
-    if(ioctl(fd, MSMFB_DISPLAY_COMMIT, &info) == -1) {
-        ALOGE("Failed to call ioctl MSMFB_DISPLAY_COMMIT err=%s",
-                strerror(errno));
-        return false;
-    }
-    return true;
-}
-
 /* dump funcs */
 inline void dump(const char* const s, const msmfb_overlay_data& ov) {
     ALOGE("%s msmfb_overlay_data id=%d",
@@ -226,12 +214,8 @@ inline void dump(const char* const s, const mdp_overlay& ov) {
     dump("src", ov.src);
     dump("src_rect", ov.src_rect);
     dump("dst_rect", ov.dst_rect);
-    /*
-    Commented off to prevent verbose logging, since user_data could have 8 or so
-    fields which are mostly 0
     dump("user_data", ov.user_data,
             sizeof(ov.user_data)/sizeof(ov.user_data[0]));
-    */
 }
 inline void dump(const char* const s, const msmfb_img& ov) {
     ALOGE("%s msmfb_img w=%d h=%d format=%d %s",
@@ -255,15 +239,15 @@ inline void dump(const char* const s, const uint32_t u[], uint32_t cnt) {
     }
 }
 inline void dump(const char* const s, const msm_rotator_img_info& rot) {
-    ALOGE("%s msm_rotator_img_info sessid=%u dstx=%d dsty=%d rot=%d, ena=%d scale=%d",
+    ALOGE("%s msm_rotator_img_info sessid=%d dstx=%d dsty=%d rot=%d, ena=%d",
             s, rot.session_id, rot.dst_x, rot.dst_y,
-            rot.rotations, rot.enable, rot.downscale_ratio);
+            rot.rotations, rot.enable);
     dump("src", rot.src);
     dump("dst", rot.dst);
     dump("src_rect", rot.src_rect);
 }
 inline void dump(const char* const s, const msm_rotator_data_info& rot) {
-    ALOGE("%s msm_rotator_data_info sessid=%u verkey=%d",
+    ALOGE("%s msm_rotator_data_info sessid=%d verkey=%d",
             s, rot.session_id, rot.version_key);
     dump("src", rot.src);
     dump("dst", rot.dst);

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2013, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012, Code Aurora Forum. All rights reserved.
 
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are
@@ -10,7 +10,7 @@
  *     copyright notice, this list of conditions and the following
  *     disclaimer in the documentation and/or other materials provided
  *     with the distribution.
- *   * Neither the name of The Linux Foundation nor the names of its
+ *   * Neither the name of Code Aurora Forum, Inc. nor the names of its
  *     contributors may be used to endorse or promote products derived
  *     from this software without specific prior written permission.
  *
@@ -52,12 +52,6 @@ enum mdp_version {
     MDSS_V5     = 500,
 };
 
-enum mdp_rev {
-    MDSS_MDP_HW_REV_100 = 0x10000000,
-    MDSS_MDP_HW_REV_101 = 0x10010000, //8x26
-    MDSS_MDP_HW_REV_102 = 0x10020000,
-};
-
 #define MDDI_PANEL       '1'
 #define EBI2_PANEL       '2'
 #define LCDC_PANEL       '3'
@@ -78,19 +72,10 @@ public:
     int getMDPVersion() {return mMDPVersion;}
     char getPanelType() {return mPanelType;}
     bool hasOverlay() {return mHasOverlay;}
-    uint8_t getTotalPipes() { return (mRGBPipes + mVGPipes + mDMAPipes);}
-    uint8_t getRGBPipes() { return mRGBPipes; }
-    uint8_t getVGPipes() { return mVGPipes; }
-    uint8_t getDMAPipes() { return mDMAPipes; }
-    bool is8x26();
 private:
     int mMDPVersion;
     char mPanelType;
     bool mHasOverlay;
-    uint32_t mMdpRev;
-    uint8_t mRGBPipes;
-    uint8_t mVGPipes;
-    uint8_t mDMAPipes;
 };
 }; //namespace qdutils
 #endif //INCLUDE_LIBQCOMUTILS_MDPVER
