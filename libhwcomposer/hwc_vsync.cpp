@@ -28,7 +28,6 @@
 #include "hwc_utils.h"
 #include "string.h"
 #include "external.h"
-#include "overlay.h"
 
 namespace qhwc {
 

@@ -43,10 +43,10 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <utils/Log.h>
+#include <mdp_version.h>
 #include "gralloc_priv.h" //for interlace
 
-// Older platforms do not support Venus.
-#ifndef VENUS_COLOR_FORMAT
+#ifndef MDP_Y_CBCR_H2V2_VENUS
 #define MDP_Y_CBCR_H2V2_VENUS (MDP_IMGTYPE_LIMIT2 + 1)
 #endif
 
@@ -77,11 +77,8 @@
 #define MDP_OV_PIPE_FORCE_DMA 0x4000
 #endif
 
-#ifndef MDP_SECURE_DISPLAY_OVERLAY_SESSION
-#define MDP_SECURE_DISPLAY_OVERLAY_SESSION 0x00002000
-#endif
-
 #define FB_DEVICE_TEMPLATE "/dev/graphics/fb%u"
+#define NUM_FB_DEVICES 3
 
 namespace overlay {
 
@@ -260,7 +257,6 @@ enum eMdpFlags {
     OV_MDP_PIPE_FORCE_DMA = MDP_OV_PIPE_FORCE_DMA,
     OV_MDP_DEINTERLACE = MDP_DEINTERLACE,
     OV_MDP_SECURE_OVERLAY_SESSION = MDP_SECURE_OVERLAY_SESSION,
-    OV_MDP_SECURE_DISPLAY_OVERLAY_SESSION = MDP_SECURE_DISPLAY_OVERLAY_SESSION,
     OV_MDP_SOURCE_ROTATED_90 = MDP_SOURCE_ROTATED_90,
     OV_MDP_BACKEND_COMPOSITION = MDP_BACKEND_COMPOSITION,
     OV_MDP_BLEND_FG_PREMULT = MDP_BLEND_FG_PREMULT,
@@ -375,12 +371,6 @@ struct PipeArgs {
     eBlending blending;
 };
 
-// Cannot use HW_OVERLAY_MAGNIFICATION_LIMIT, since at the time
-// of integration, HW_OVERLAY_MAGNIFICATION_LIMIT was a define
-enum { HW_OV_MAGNIFICATION_LIMIT = 20,
-    HW_OV_MINIFICATION_LIMIT  = 8
-};
-
 inline void setMdpFlags(eMdpFlags& f, eMdpFlags v) {
     f = static_cast<eMdpFlags>(setBit(f, v));
 }
@@ -389,7 +379,14 @@ inline void clearMdpFlags(eMdpFlags& f, eMdpFlags v) {
     f = static_cast<eMdpFlags>(clrBit(f, v));
 }
 
+// fb 0/1/2
 enum { FB0, FB1, FB2 };
+
+//Panels could be categorized as primary and external
+enum { PRIMARY, EXTERNAL };
+
+// 2 for rgb0/1 double bufs
+enum { RGB_PIPE_NUM_BUFS = 2 };
 
 struct ScreenInfo {
     ScreenInfo() : mFBWidth(0),
@@ -412,7 +409,12 @@ int getDownscaleFactor(const int& src_w, const int& src_h,
  * rotation is 90, 180 etc
  * It returns MDP related enum/define that match rot+flip*/
 int getMdpOrient(eTransform rotation);
+int getOverlayMagnificationLimit();
 const char* getFormatString(int format);
+
+enum {
+    HW_OV_MINIFICATION_LIMIT  = 8
+};
 
 template <class T>
 inline void memset0(T& t) { ::memset(&t, 0, sizeof(T)); }
@@ -483,8 +485,6 @@ inline bool isYuv(uint32_t format) {
         case MDP_Y_CR_CB_H2V2:
         case MDP_Y_CR_CB_GH2V2:
         case MDP_Y_CBCR_H2V2_VENUS:
-        case MDP_YCBYCR_H2V1:
-        case MDP_YCRYCB_H2V1:
             return true;
         default:
             return false;
@@ -514,7 +514,6 @@ inline const char* getFormatString(int format){
         "MDP_ARGB_8888",
         "MDP_RGB_888",
         "MDP_Y_CRCB_H2V2",
-        "MDP_YCBYCR_H2V1",
         "MDP_YCRYCB_H2V1",
         "MDP_Y_CRCB_H2V1",
         "MDP_Y_CBCR_H2V1",

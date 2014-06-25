@@ -10,7 +10,7 @@
  *     copyright notice, this list of conditions and the following
  *     disclaimer in the documentation and/or other materials provided
  *     with the distribution.
- *   * Neither the name of The Linux Foundation nor the names of its
+ *   * Neither the name of The Linux Foundation, Inc. nor the names of its
  *     contributors may be used to endorse or promote products derived
  *     from this software without specific prior written permission.
  *
@@ -33,10 +33,7 @@
 #include <linux/msm_mdp.h>
 #include "mdp_version.h"
 
-namespace android {
 ANDROID_SINGLETON_STATIC_INSTANCE(qdutils::MDPVersion);
-}
-
 namespace qdutils {
 
 MDPVersion::MDPVersion()
@@ -97,24 +94,9 @@ MDPVersion::MDPVersion()
     close(fb_fd);
     mMDPVersion = mdp_version;
     mHasOverlay = false;
-    if((mMDPVersion >= MDP_V4_0) || (mMDPVersion == MDP_V_UNKNOWN))
+    if(mMDPVersion >= MDP_V4_0)
         mHasOverlay = true;
     mPanelType = panel_type;
 }
-
-bool MDPVersion::is8x26() {
-    // check for 8x26 variants
-    // chip variants have same major number and minor numbers usually vary
-    // for e.g., MDSS_MDP_HW_REV_101 is 0x10010000
-    //                                    1001       -  major number
-    //                                        0000   -  minor number
-    // 8x26 v1 minor number is 0000
-    //      v2 minor number is 0001 etc..
-    if( mMdpRev >= MDSS_MDP_HW_REV_101 && mMdpRev < MDSS_MDP_HW_REV_102) {
-        return true;
-    }
-    return false;
-}
-
 }; //namespace qdutils
 

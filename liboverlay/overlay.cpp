@@ -38,7 +38,13 @@ namespace overlay {
 using namespace utils;
 
 Overlay::Overlay() {
-    PipeBook::NUM_PIPES = qdutils::MDPVersion::getInstance().getTotalPipes();
+    char property[PROPERTY_VALUE_MAX];
+    if (property_get("debug.mdpcomp.maxlayer", property, NULL) > 0) {
+        PipeBook::NUM_PIPES = atoi(property);
+    } else {
+        PipeBook::NUM_PIPES = qdutils::MDPVersion::getInstance().getTotalPipes();
+    }
+
     for(int i = 0; i < PipeBook::NUM_PIPES; i++) {
         mPipeBook[i].init();
     }
@@ -87,28 +93,14 @@ eDest Overlay::nextPipe(eMdpPipeType type, int dpy) {
     for(int i = 0; i < PipeBook::NUM_PIPES; i++) {
         //Match requested pipe type
         if(type == OV_MDP_PIPE_ANY || type == PipeBook::getPipeType((eDest)i)) {
-            //Check if the pipe is used by the requested display
-            //already in previous round.
-            if(mPipeBook[i].mDisplay == dpy &&
+            //If the pipe is not allocated to any display or used by the
+            //requesting display already in previous round.
+            if((mPipeBook[i].mDisplay == PipeBook::DPY_UNUSED ||
+                    mPipeBook[i].mDisplay == dpy) &&
                     PipeBook::isNotAllocated(i)) {
                 dest = (eDest)i;
                 PipeBook::setAllocation(i);
                 break;
-            }
-        }
-    }
-
-    if(dest == OV_INVALID) {
-        for(int i = 0; i < PipeBook::NUM_PIPES; i++) {
-            //Match requested pipe type
-            if(type == OV_MDP_PIPE_ANY || type == PipeBook::getPipeType((eDest)i)) {
-                //Check if the pipe is not allocated to any display
-                if(mPipeBook[i].mDisplay == DPY_UNUSED &&
-                   PipeBook::isNotAllocated(i)) {
-                    dest = (eDest)i;
-                    PipeBook::setAllocation(i);
-                    break;
-                }
             }
         }
     }
@@ -142,15 +134,11 @@ bool Overlay::commit(utils::eDest dest) {
         ret = true;
         PipeBook::setUse((int)dest);
     } else {
+        PipeBook::resetUse((int)dest);
         int dpy = mPipeBook[index].mDisplay;
         for(int i = 0; i < PipeBook::NUM_PIPES; i++)
-            if (mPipeBook[i].mDisplay == dpy) {
+            if (mPipeBook[i].mDisplay == dpy)
                 PipeBook::resetAllocation(i);
-                PipeBook::resetUse(i);
-                if(mPipeBook[i].valid()) {
-                    mPipeBook[i].mPipe->forceSet();
-                }
-            }
     }
     return ret;
 }
@@ -251,7 +239,7 @@ int Overlay::initOverlay() {
         mdp_mixer_info *minfo = NULL;
         char name[64];
         int fd = -1;
-        for(int i = 0; i < MAX_FB_DEVICES; i++) {
+        for(int i = 0; i < NUM_FB_DEVICES; i++) {
             snprintf(name, 64, FB_DEVICE_TEMPLATE, i);
             ALOGD("initoverlay:: opening the device:: %s", name);
             fd = ::open(name, O_RDWR, 0);
@@ -270,13 +258,16 @@ int Overlay::initOverlay() {
             for (int j = 0; j < req.cnt; j++) {
                 ALOGD("ndx=%d num=%d z_order=%d", minfo->pndx, minfo->pnum,
                       minfo->z_order);
-                // clear any pipe connected to mixer including base pipe.
-                int index = minfo->pndx;
-                ALOGD("Unset overlay with index: %d at mixer %d", index, i);
-                if(ioctl(fd, MSMFB_OVERLAY_UNSET, &index) == -1) {
-                    ALOGE("ERROR: MSMFB_OVERLAY_UNSET failed");
-                    close(fd);
-                    return -1;
+                // except the RGB base layer with z_order of -1, clear any
+                // other pipes connected to mixer.
+                if((minfo->z_order) != -1) {
+                    int index = minfo->pndx;
+                    ALOGD("Unset overlay with index: %d at mixer %d", index, i);
+                    if(ioctl(fd, MSMFB_OVERLAY_UNSET, &index) == -1) {
+                        ALOGE("ERROR: MSMFB_OVERLAY_UNSET failed");
+                        close(fd);
+                        return -1;
+                    }
                 }
                 minfo++;
             }
@@ -284,47 +275,7 @@ int Overlay::initOverlay() {
             fd = -1;
         }
     }
-
-    FILE *displayDeviceFP = NULL;
-    const int MAX_FRAME_BUFFER_NAME_SIZE = 128;
-    char fbType[MAX_FRAME_BUFFER_NAME_SIZE];
-    char msmFbTypePath[MAX_FRAME_BUFFER_NAME_SIZE];
-    const char *strDtvPanel = "dtv panel";
-    const char *strWbPanel = "writeback panel";
-
-    for(int num = 1; num < MAX_FB_DEVICES; num++) {
-        snprintf (msmFbTypePath, sizeof(msmFbTypePath),
-                "/sys/class/graphics/fb%d/msm_fb_type", num);
-        displayDeviceFP = fopen(msmFbTypePath, "r");
-
-        if(displayDeviceFP){
-            fread(fbType, sizeof(char), MAX_FRAME_BUFFER_NAME_SIZE,
-                    displayDeviceFP);
-
-            if(strncmp(fbType, strDtvPanel, strlen(strDtvPanel)) == 0) {
-                sDpyFbMap[DPY_EXTERNAL] = num;
-            } else if(strncmp(fbType, strWbPanel, strlen(strWbPanel)) == 0) {
-                sDpyFbMap[DPY_WRITEBACK] = num;
-            }
-
-            fclose(displayDeviceFP);
-        }
-    }
-
     return 0;
-}
-
-bool Overlay::displayCommit(const int& fd, uint32_t wait_for_finish) {
-    //Commit
-    struct mdp_display_commit info;
-    memset(&info, 0, sizeof(struct mdp_display_commit));
-    info.wait_for_finish = wait_for_finish;
-    info.flags = MDP_DISPLAY_COMMIT_OVERLAY;
-    if(!mdp_wrapper::displayCommit(fd, info)) {
-       ALOGE("%s: commit failed", __func__);
-       return false;
-    }
-    return true;
 }
 
 void Overlay::dump() const {
@@ -338,7 +289,7 @@ void Overlay::getDump(char *buf, size_t len) {
     const char *str = "\nOverlay State\n==========================\n";
     strncat(buf, str, strlen(str));
     for(int i = 0; i < PipeBook::NUM_PIPES; i++) {
-        if(mPipeBook[i].valid() && mPipeBook[i].isUsed(i)) {
+        if(mPipeBook[i].valid()) {
             mPipeBook[i].mPipe->getDump(buf, len);
             char str[64] = {'\0'};
             snprintf(str, 64, "Attached to dpy=%d\n\n", mPipeBook[i].mDisplay);
@@ -349,19 +300,6 @@ void Overlay::getDump(char *buf, size_t len) {
     char str_pipes[64] = {'\0'};
     snprintf(str_pipes, 64, "Pipes used=%d\n\n", totalPipes);
     strncat(buf, str_pipes, strlen(str_pipes));
-}
-
-void Overlay::clear(int dpy) {
-    for(int i = 0; i < PipeBook::NUM_PIPES; i++) {
-        if (mPipeBook[i].mDisplay == dpy) {
-            // Mark as available for this round
-            PipeBook::resetUse(i);
-            PipeBook::resetAllocation(i);
-            if(mPipeBook[i].valid()) {
-                mPipeBook[i].mPipe->forceSet();
-            }
-        }
-    }
 }
 
 void Overlay::PipeBook::init() {
@@ -378,7 +316,7 @@ void Overlay::PipeBook::destroy() {
 }
 
 Overlay* Overlay::sInstance = 0;
-int Overlay::sDpyFbMap[DPY_MAX] = {0, -1,-1};
+int Overlay::sExtFbIndex = 1;
 int Overlay::PipeBook::NUM_PIPES = 0;
 int Overlay::PipeBook::sPipeUsageBitmap = 0;
 int Overlay::PipeBook::sLastUsageBitmap = 0;

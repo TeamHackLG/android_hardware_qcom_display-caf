@@ -17,6 +17,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #define ATRACE_TAG (ATRACE_TAG_GRAPHICS | ATRACE_TAG_HAL)
 #include <fcntl.h>
 #include <errno.h>
@@ -24,26 +25,21 @@
 #include <cutils/log.h>
 #include <cutils/atomic.h>
 #include <EGL/egl.h>
-#include <utils/Trace.h>
-#include <sys/ioctl.h>
+
 #include <overlay.h>
 #include <overlayRotator.h>
+#include <fb_priv.h>
 #include <mdp_version.h>
 #include "hwc_utils.h"
 #include "hwc_fbupdate.h"
 #include "hwc_mdpcomp.h"
-#include "hwc_dump_layers.h"
 #include "external.h"
 #include "hwc_copybit.h"
 #include "profiler.h"
 
 using namespace qhwc;
-using namespace overlay;
-
 #define VSYNC_DEBUG 0
-#define BLANK_DEBUG 1
-
-#define NON_PRO_8960_SOC_ID 87
+#define BLANK_DEBUG 0
 
 static int hwc_device_open(const struct hw_module_t* module,
                            const char* name,
@@ -52,8 +48,6 @@ static int hwc_device_open(const struct hw_module_t* module,
 static struct hw_module_methods_t hwc_module_methods = {
     open: hwc_device_open
 };
-
-static void reset_panel(struct hwc_composer_device_1* dev);
 
 hwc_module_t HAL_MODULE_INFO_SYM = {
     common: {
@@ -68,17 +62,6 @@ hwc_module_t HAL_MODULE_INFO_SYM = {
         reserved: {0},
     }
 };
-
-/* In case of non-hybrid WFD session, we are fooling SF by piggybacking on
- * HDMI display ID for virtual. This helper is needed to differentiate their
- * paths in HAL.
- * TODO: Not needed once we have WFD client working on top of Google API's */
-
-static int getDpyforExternalDisplay(hwc_context_t *ctx, int dpy) {
-    if(dpy == HWC_DISPLAY_EXTERNAL && ctx->mVirtualonExtActive)
-        return HWC_DISPLAY_VIRTUAL;
-    return dpy;
-}
 
 /*
  * Save callback functions registered to HWC
@@ -103,30 +86,18 @@ static void hwc_registerProcs(struct hwc_composer_device_1* dev,
 //Helper
 static void reset(hwc_context_t *ctx, int numDisplays,
                   hwc_display_contents_1_t** displays) {
-    ctx->isPaddingRound = false;
     memset(ctx->listStats, 0, sizeof(ctx->listStats));
-    for(int i = 0; i < HWC_NUM_DISPLAY_TYPES; i++) {
+    for(int i = 0; i < HWC_NUM_DISPLAY_TYPES; i++){
         hwc_display_contents_1_t *list = displays[i];
         // XXX:SurfaceFlinger no longer guarantees that this
         // value is reset on every prepare. However, for the layer
         // cache we need to reset it.
         // We can probably rethink that later on
-        if (LIKELY(list && list->numHwLayers > 0)) {
+        if (LIKELY(list && list->numHwLayers > 1)) {
             for(uint32_t j = 0; j < list->numHwLayers; j++) {
                 if(list->hwLayers[j].compositionType != HWC_FRAMEBUFFER_TARGET)
                     list->hwLayers[j].compositionType = HWC_FRAMEBUFFER;
             }
-
-            if((ctx->mPrevHwLayerCount[i] == 1) and (list->numHwLayers > 1)) {
-                /* If the previous cycle for dpy 'i' has 0 AppLayers and the
-                 * current cycle has atleast 1 AppLayer, padding round needs
-                 * to be invoked on current cycle to free up the resources.
-                 */
-                ctx->isPaddingRound = true;
-            }
-            ctx->mPrevHwLayerCount[i] = list->numHwLayers;
-        } else {
-            ctx->mPrevHwLayerCount[i] = 0;
         }
 
         if(ctx->mFBUpdate[i])
@@ -136,39 +107,46 @@ static void reset(hwc_context_t *ctx, int numDisplays,
         if(ctx->mLayerRotMap[i])
             ctx->mLayerRotMap[i]->reset();
     }
-
 }
 
 //clear prev layer prop flags and realloc for current frame
-static void reset_layer_prop(hwc_context_t* ctx, int dpy, int numAppLayers) {
+static void reset_layer_prop(hwc_context_t* ctx, int dpy) {
+    int layer_count = ctx->listStats[dpy].numAppLayers;
+
     if(ctx->layerProp[dpy]) {
        delete[] ctx->layerProp[dpy];
        ctx->layerProp[dpy] = NULL;
     }
-    ctx->layerProp[dpy] = new LayerProp[numAppLayers];
-}
 
+    if(layer_count) {
+       ctx->layerProp[dpy] = new LayerProp[layer_count];
+    }
+}
 
 static int hwc_prepare_primary(hwc_composer_device_1 *dev,
         hwc_display_contents_1_t *list) {
     hwc_context_t* ctx = (hwc_context_t*)(dev);
     const int dpy = HWC_DISPLAY_PRIMARY;
-    int ret = -1;
-    if(UNLIKELY(!ctx->mBasePipeSetup))
-        setupBasePipe(ctx);
-    if (LIKELY(list && list->numHwLayers > 1) &&
-            ctx->dpyAttr[dpy].isActive) {
-        reset_layer_prop(ctx, dpy, list->numHwLayers - 1);
-        setListStats(ctx, list, dpy);
-        if((ret = ctx->mMDPComp[dpy]->prepare(ctx, list)) < 0) {
-            const int fbZ = 0;
-            ctx->mFBUpdate[dpy]->prepare(ctx, list, fbZ);
-        }
 
-        // Use Copybit, when Full/Partial MDP comp fails
-        // (only for 8960 which has  dedicated 2D core)
-        if((ret < 1) && (ctx->mSocId == NON_PRO_8960_SOC_ID) && ctx->mCopyBit[dpy])
-            ctx->mCopyBit[dpy]->prepare(ctx, list, dpy);
+    if (LIKELY(list && list->numHwLayers > 1 &&
+        list->numHwLayers <= MAX_NUM_LAYERS) && ctx->dpyAttr[dpy].isActive) {
+
+        uint32_t last = list->numHwLayers - 1;
+        hwc_layer_1_t *fbLayer = &list->hwLayers[last];
+        if(fbLayer->handle) {
+            setListStats(ctx, list, dpy);
+            int fbZOrder = ctx->mMDPComp[dpy]->prepare(ctx, list);
+            if(fbZOrder >= 0)
+                ctx->mFBUpdate[dpy]->prepare(ctx, list, fbZOrder);
+
+            /* Temporarily commenting out C2D until we support partial
+               copybit composition for mixed mode MDP
+
+            // Use Copybit, when MDP comp fails
+            if((fbZOrder >= 0) && ctx->mCopyBit[dpy])
+                ctx->mCopyBit[dpy]->prepare(ctx, list, dpy);
+            */
+        }
     }
     return 0;
 }
@@ -177,93 +155,54 @@ static int hwc_prepare_external(hwc_composer_device_1 *dev,
         hwc_display_contents_1_t *list) {
     hwc_context_t* ctx = (hwc_context_t*)(dev);
     const int dpy = HWC_DISPLAY_EXTERNAL;
-    int ret = -1;
 
-    if (LIKELY(list && list->numHwLayers > 1) &&
-            ctx->dpyAttr[dpy].isActive &&
-            ctx->dpyAttr[dpy].connected) {
-        reset_layer_prop(ctx, dpy, list->numHwLayers - 1);
-        if(!ctx->dpyAttr[dpy].isPause) {
-           ctx->dpyAttr[dpy].isConfiguring = false;
-           setListStats(ctx, list, dpy);
-           if((ret = ctx->mMDPComp[dpy]->prepare(ctx, list)) < 0) {
-              const int fbZ = 0;
-              ctx->mFBUpdate[dpy]->prepare(ctx, list, fbZ);
-           }
-           // Use Copybit, when Full/Partial MDP comp fails
-           // (only for 8960 which has  dedicated 2D core)
-           if((ret < 1) && (ctx->mSocId == NON_PRO_8960_SOC_ID) && ctx->mCopyBit[dpy] &&
-                 !ctx->listStats[dpy].isDisplayAnimating)
-                ctx->mCopyBit[dpy]->prepare(ctx, list, dpy);
-        } else {
-            /* External Display is in Pause state.
-             * Mark all application layers as OVERLAY so that
-             * GPU will not compose.
-             */
-            for(size_t i = 0 ;i < (size_t)(list->numHwLayers - 1); i++) {
-                hwc_layer_1_t *layer = &list->hwLayers[i];
-                layer->compositionType = HWC_OVERLAY;
-            }
+    if (LIKELY(list && list->numHwLayers > 1 &&
+        list->numHwLayers <= MAX_NUM_LAYERS) &&
+        ctx->dpyAttr[dpy].isActive &&
+        ctx->dpyAttr[dpy].connected) {
+
+        uint32_t last = list->numHwLayers - 1;
+        hwc_layer_1_t *fbLayer = &list->hwLayers[last];
+        if(fbLayer->handle) {
+            setListStats(ctx, list, dpy);
+            reset_layer_prop(ctx, dpy);
+                int fbZOrder = ctx->mMDPComp[dpy]->prepare(ctx, list);
+                if(fbZOrder >= 0)
+                    ctx->mFBUpdate[dpy]->prepare(ctx, list, fbZOrder);
+
+                /* Temporarily commenting out C2D until we support partial
+                   copybit composition for mixed mode MDP
+
+                if((fbZOrder >= 0) && ctx->mCopyBit[dpy])
+                     ctx->mCopyBit[dpy]->prepare(ctx, list, dpy);
+                */
+            ctx->mExtDispConfiguring = false;
         }
     }
     return 0;
 }
 
 static int hwc_prepare_virtual(hwc_composer_device_1 *dev,
-        hwc_display_contents_1_t *list) {
-
-    hwc_context_t* ctx = (hwc_context_t*)(dev);
-    const int dpy = HWC_DISPLAY_VIRTUAL;
-
-    if (LIKELY(list && list->numHwLayers > 1) &&
-            ctx->dpyAttr[dpy].isActive &&
-            ctx->dpyAttr[dpy].connected) {
-        reset_layer_prop(ctx, dpy, list->numHwLayers - 1);
-        if(!ctx->dpyAttr[dpy].isPause) {
-            ctx->dpyAttr[dpy].isConfiguring = false;
-            setListStats(ctx, list, dpy);
-            if(ctx->mMDPComp[dpy]->prepare(ctx, list) < 0) {
-                const int fbZ = 0;
-                ctx->mFBUpdate[dpy]->prepare(ctx, list, fbZ);
-            }
-        } else {
-            /* Virtual Display is in Pause state.
-             * Mark all application layers as OVERLAY so that
-             * GPU will not compose.
-             */
-            for(size_t i = 0 ;i < (size_t)(list->numHwLayers - 1); i++) {
-                hwc_layer_1_t *layer = &list->hwLayers[i];
-                layer->compositionType = HWC_OVERLAY;
-            }
-        }
-    }
+                               hwc_display_contents_1_t *list, int dpy) {
+    //XXX: Fix when framework support is added
     return 0;
 }
-
 
 static int hwc_prepare(hwc_composer_device_1 *dev, size_t numDisplays,
                        hwc_display_contents_1_t** displays)
 {
     int ret = 0;
     hwc_context_t* ctx = (hwc_context_t*)(dev);
-
-    if (ctx->mPanelResetStatus) {
-        ALOGW("%s: panel is in bad state. reset the panel", __FUNCTION__);
-        reset_panel(dev);
-    }
-
-    //Will be unlocked at the end of set
-    ctx->mDrawLock.lock();
+    Locker::Autolock _l(ctx->mBlankLock);
     reset(ctx, numDisplays, displays);
 
     ctx->mOverlay->configBegin();
     ctx->mRotMgr->configBegin();
     ctx->mNeedsRotator = false;
 
-    for (int32_t i = numDisplays; i >= 0; i--) {
+    for (int32_t i = numDisplays - 1; i >= 0; i--) {
         hwc_display_contents_1_t *list = displays[i];
-        int dpy = getDpyforExternalDisplay(ctx, i);
-        switch(dpy) {
+        switch(i) {
             case HWC_DISPLAY_PRIMARY:
                 ret = hwc_prepare_primary(dev, list);
                 break;
@@ -271,7 +210,7 @@ static int hwc_prepare(hwc_composer_device_1 *dev, size_t numDisplays,
                 ret = hwc_prepare_external(dev, list);
                 break;
             case HWC_DISPLAY_VIRTUAL:
-                ret = hwc_prepare_virtual(dev, list);
+                ret = hwc_prepare_virtual(dev, list, i);
                 break;
             default:
                 ret = -EINVAL;
@@ -288,8 +227,11 @@ static int hwc_eventControl(struct hwc_composer_device_1* dev, int dpy,
                              int event, int enable)
 {
     int ret = 0;
-    hwc_context_t* ctx = (hwc_context_t*)(dev);
 
+    hwc_context_t* ctx = (hwc_context_t*)(dev);
+    private_module_t* m = reinterpret_cast<private_module_t*>(
+                ctx->mFbDev->common.module);
+    Locker::Autolock _l(ctx->mBlankLock);
     if(!ctx->dpyAttr[dpy].isActive) {
         ALOGE("Display is blanked - Cannot %s vsync",
               enable ? "enable" : "disable");
@@ -306,15 +248,6 @@ static int hwc_eventControl(struct hwc_composer_device_1* dev, int dpy,
             ALOGD_IF (VSYNC_DEBUG, "VSYNC state changed to %s",
                       (enable)?"ENABLED":"DISABLED");
             break;
-#ifdef QCOM_BSP
-        case  HWC_EVENT_ORIENTATION:
-            if(dpy == HWC_DISPLAY_PRIMARY) {
-                Locker::Autolock _l(ctx->mDrawLock);
-                // store the primary display orientation
-                ctx->deviceOrientation = enable;
-            }
-            break;
-#endif
         default:
             ret = -EINVAL;
     }
@@ -323,21 +256,12 @@ static int hwc_eventControl(struct hwc_composer_device_1* dev, int dpy,
 
 static int hwc_blank(struct hwc_composer_device_1* dev, int dpy, int blank)
 {
-    ATRACE_CALL();
     hwc_context_t* ctx = (hwc_context_t*)(dev);
-
-    Locker::Autolock _l(ctx->mDrawLock);
-    int ret = 0, value = 0;
-
-    /* In case of non-hybrid WFD session, we are fooling SF by
-     * piggybacking on HDMI display ID for virtual.
-     * TODO: Not needed once we have WFD client working on top
-     * of Google API's.
-     */
-    dpy = getDpyforExternalDisplay(ctx,dpy);
-
-    ALOGD_IF(BLANK_DEBUG, "%s: %s display: %d", __FUNCTION__,
-          blank==1 ? "Blanking":"Unblanking", dpy);
+    private_module_t* m = reinterpret_cast<private_module_t*>(
+        ctx->mFbDev->common.module);
+    int ret = 0;
+     ALOGD_IF(BLANK_DEBUG, "%s: %s display: %d", __FUNCTION__,
+           blank==1 ? "Blanking":"Unblanking", dpy);
     if(blank) {
         // free up all the overlay pipes in use
         // when we get a blank for either display
@@ -347,122 +271,65 @@ static int hwc_blank(struct hwc_composer_device_1* dev, int dpy, int blank)
         ctx->mRotMgr->clear();
     }
     switch(dpy) {
-    case HWC_DISPLAY_PRIMARY:
-        if(blank) {
-            int dpy = HWC_DISPLAY_PRIMARY;
-            if(!Overlay::displayCommit(ctx->dpyAttr[dpy].fd)){
-                ALOGE("%s: display commit fail for primary!", __FUNCTION__);
-                ret = -1;
-            }
-        }
-        value = blank ? FB_BLANK_POWERDOWN : FB_BLANK_UNBLANK;
-        if(ioctl(ctx->dpyAttr[dpy].fd, FBIOBLANK, value) < 0 ) {
-            ALOGE("%s: Failed to handle blank event(%d) for Primary!!",
-                  __FUNCTION__, blank );
-            return -1;
-        }
-
-        if(!blank) {
-            // Enable HPD here, as during bootup unblank is called
-            // when SF is completely initialized
-            ctx->mExtDisplay->setHPD(1);
-        }
-
-        ctx->dpyAttr[dpy].isActive = !blank;
-
-        if(ctx->mVirtualonExtActive) {
-            /* if mVirtualonExtActive is true, display hal will
-             * receive unblank calls for non-hybrid WFD solution
-             * since we piggyback on HDMI.
-             * TODO: Not needed once we have WFD client working on top
-             of Google API's */
-            break;
-        }
-    case HWC_DISPLAY_VIRTUAL:
-        /* There are two ways to reach this block of code.
-
-         * Display hal has received unblank call on HWC_DISPLAY_EXTERNAL
-         and ctx->mVirtualonExtActive is true. In this case, non-hybrid
-         WFD is active. If so, getDpyforExternalDisplay will return dpy
-         as HWC_DISPLAY_VIRTUAL.
-
-         * Display hal has received unblank call on HWC_DISPLAY_PRIMARY
-         and since SF is not aware of VIRTUAL DISPLAY being handle by HWC,
-         it wont send blank / unblank events for it. We piggyback on
-         PRIMARY DISPLAY events to release mdp pipes and
-         activate/deactivate VIRTUAL DISPLAY.
-
-         * TODO: This separate case statement is not needed once we have
-         WFD client working on top of Google API's.
-
-         */
-
-        if(ctx->dpyAttr[HWC_DISPLAY_VIRTUAL].connected) {
+        case HWC_DISPLAY_PRIMARY:
             if(blank) {
-                int dpy = HWC_DISPLAY_VIRTUAL;
-                if(!Overlay::displayCommit(ctx->dpyAttr[dpy].fd,1)) {
-                    ALOGE("%s: display commit fail for virtual!", __FUNCTION__);
+                ret = ioctl(m->framebuffer->fd, FBIOBLANK,
+                            FB_BLANK_POWERDOWN);
+            } else {
+                ret = ioctl(m->framebuffer->fd, FBIOBLANK, FB_BLANK_UNBLANK);
+            }
+            break;
+        case HWC_DISPLAY_EXTERNAL:
+            if(blank) {
+                // External Display post commits the changes to display
+                // Call this on blank, so that any pipe unsets gets committed
+                if (!ctx->mExtDisplay->post()) {
                     ret = -1;
+                    ALOGE("%s:post failed for external display !! ",
+                          __FUNCTION__);
                 }
+            } else {
             }
-            ctx->dpyAttr[HWC_DISPLAY_VIRTUAL].isActive = !blank;
-        }
-        break;
-    case HWC_DISPLAY_EXTERNAL:
-        if(blank) {
-            if(!Overlay::displayCommit(ctx->dpyAttr[dpy].fd,1)) {
-                ALOGE("%s: display commit fail for external!", __FUNCTION__);
-                ret = -1;
-            }
-        }
+            break;
+        default:
+            return -EINVAL;
+    }
+    // Enable HPD only once, after SF is completely initialized
+    if(!(ctx->isHPDEnabled)) {
+    if (ctx->dpyAttr[HWC_DISPLAY_EXTERNAL].connected)
+       ctx->mExtDisplay->setHPD(1);
+       ctx->isHPDEnabled = true;
+    }
+
+    if(ret == 0){
         ctx->dpyAttr[dpy].isActive = !blank;
-        break;
-    default:
-        return -EINVAL;
+    } else {
+        ALOGE("%s: Failed in %s display: %d error:%s", __FUNCTION__,
+              blank==1 ? "blanking":"unblanking", dpy, strerror(errno));
+        return ret;
     }
 
-    ALOGD_IF(BLANK_DEBUG, "%s: Done %s display: %d", __FUNCTION__,
-          blank ? "blanking":"unblanking", dpy);
-    return ret;
+    ALOGD("%s: Done %s display: %d", __FUNCTION__,
+          blank==1 ? "blanking":"unblanking", dpy);
+    return 0;
 }
-
-static void reset_panel(struct hwc_composer_device_1* dev)
-{
-    int ret = 0;
-    hwc_context_t* ctx = (hwc_context_t*)(dev);
-
-    if (!ctx->mPanelResetStatus)
-        return;
-
-    ALOGD("%s: calling BLANK DISPLAY", __FUNCTION__);
-    ret = hwc_blank(dev, HWC_DISPLAY_PRIMARY, 1);
-    if (ret < 0) {
-        ALOGE("%s: FBIOBLANK failed to BLANK:  %s", __FUNCTION__,
-                                                            strerror(errno));
-    }
-
-    ALOGD("%s: calling UNBLANK DISPLAY and enabling vsync", __FUNCTION__);
-    ret = hwc_blank(dev, HWC_DISPLAY_PRIMARY, 0);
-    if (ret < 0) {
-        ALOGE("%s: FBIOBLANK failed to UNBLANK : %s", __FUNCTION__,
-                                                            strerror(errno));
-    }
-    hwc_vsync_control(ctx, HWC_DISPLAY_PRIMARY, 1);
-
-    ctx->mPanelResetStatus = false;
-}
-
 
 static int hwc_query(struct hwc_composer_device_1* dev,
                      int param, int* value)
 {
     hwc_context_t* ctx = (hwc_context_t*)(dev);
+    private_module_t* m = reinterpret_cast<private_module_t*>(
+        ctx->mFbDev->common.module);
     int supported = HWC_DISPLAY_PRIMARY_BIT;
 
     switch (param) {
     case HWC_BACKGROUND_LAYER_SUPPORTED:
         // Not supported for now
         value[0] = 0;
+        break;
+    case HWC_VSYNC_PERIOD: //Not used for hwc > 1.1
+        value[0] = m->fps;
+        ALOGI("fps: %d", value[0]);
         break;
     case HWC_DISPLAY_TYPES_SUPPORTED:
         if(ctx->mMDP.hasOverlay)
@@ -476,24 +343,20 @@ static int hwc_query(struct hwc_composer_device_1* dev,
 
 }
 
-
 static int hwc_set_primary(hwc_context_t *ctx, hwc_display_contents_1_t* list) {
-    ATRACE_CALL();
     int ret = 0;
     const int dpy = HWC_DISPLAY_PRIMARY;
+    if(UNLIKELY(!ctx->mBasePipeSetup) && 
+             qdutils::MDPVersion::getInstance().getMDPVersion() >= qdutils::MDP_V4_2)
+        setupBasePipe(ctx);
     if (LIKELY(list) && ctx->dpyAttr[dpy].isActive) {
         uint32_t last = list->numHwLayers - 1;
         hwc_layer_1_t *fbLayer = &list->hwLayers[last];
         int fd = -1; //FenceFD from the Copybit(valid in async mode)
-        bool copybitDone = false;
         if(ctx->mCopyBit[dpy])
-            copybitDone = ctx->mCopyBit[dpy]->draw(ctx, list, dpy, &fd);
+            ctx->mCopyBit[dpy]->draw(ctx, list, dpy, &fd);
         if(list->numHwLayers > 1)
             hwc_sync(ctx, list, dpy, fd);
-
-        // Dump the layers for primary
-        if(ctx->mHwcDebug[dpy])
-            ctx->mHwcDebug[dpy]->dumpLayers(list);
 
         if (!ctx->mMDPComp[dpy]->draw(ctx, list)) {
             ALOGE("%s: MDPComp draw failed", __FUNCTION__);
@@ -503,20 +366,18 @@ static int hwc_set_primary(hwc_context_t *ctx, hwc_display_contents_1_t* list) {
         //TODO We dont check for SKIP flag on this layer because we need PAN
         //always. Last layer is always FB
         private_handle_t *hnd = (private_handle_t *)fbLayer->handle;
-        if(copybitDone && ctx->mMDP.version > qdutils::MDP_V4_3) {
-            hnd = ctx->mCopyBit[dpy]->getCurrentRenderBuffer();
-        }
-
-        if(hnd) {
-            if (!ctx->mFBUpdate[dpy]->draw(ctx, hnd)) {
-                ALOGE("%s: FBUpdate draw failed", __FUNCTION__);
+        if(fbLayer->compositionType == HWC_FRAMEBUFFER_TARGET && hnd) {
+            if(!(fbLayer->flags & HWC_SKIP_LAYER) &&
+                (list->numHwLayers > 1)) {
+                if (!ctx->mFBUpdate[dpy]->draw(ctx, hnd)) {
+                    ALOGE("%s: FBUpdate draw failed", __FUNCTION__);
+                    ret = -1;
+                }
+            }
+            if (ctx->mFbDev->post(ctx->mFbDev, fbLayer->handle)) {
+                ALOGE("%s: ctx->mFbDev->post fail!", __FUNCTION__);
                 ret = -1;
             }
-        }
-
-        if(!Overlay::displayCommit(ctx->dpyAttr[dpy].fd)) {
-            ALOGE("%s: display commit fail for %d dpy!", __FUNCTION__, dpy);
-            ret = -1;
         }
     }
 
@@ -525,56 +386,39 @@ static int hwc_set_primary(hwc_context_t *ctx, hwc_display_contents_1_t* list) {
 }
 
 static int hwc_set_external(hwc_context_t *ctx,
-                            hwc_display_contents_1_t* list)
-{
-    ATRACE_CALL();
+        hwc_display_contents_1_t* list) {
     int ret = 0;
-
     const int dpy = HWC_DISPLAY_EXTERNAL;
 
+    Locker::Autolock _l(ctx->mExtSetLock);
 
     if (LIKELY(list) && ctx->dpyAttr[dpy].isActive &&
-        ctx->dpyAttr[dpy].connected &&
-        !ctx->dpyAttr[dpy].isPause) {
+        ctx->dpyAttr[dpy].connected) {
         uint32_t last = list->numHwLayers - 1;
         hwc_layer_1_t *fbLayer = &list->hwLayers[last];
         int fd = -1; //FenceFD from the Copybit(valid in async mode)
-        bool copybitDone = false;
         if(ctx->mCopyBit[dpy])
-            copybitDone = ctx->mCopyBit[dpy]->draw(ctx, list, dpy, &fd);
+            ctx->mCopyBit[dpy]->draw(ctx, list, dpy, &fd);
 
         if(list->numHwLayers > 1)
             hwc_sync(ctx, list, dpy, fd);
-
-        // Dump the layers for external
-        if(ctx->mHwcDebug[dpy])
-            ctx->mHwcDebug[dpy]->dumpLayers(list);
 
         if (!ctx->mMDPComp[dpy]->draw(ctx, list)) {
             ALOGE("%s: MDPComp draw failed", __FUNCTION__);
             ret = -1;
         }
 
-        int extOnlyLayerIndex =
-                ctx->listStats[dpy].extOnlyLayerIndex;
-
         private_handle_t *hnd = (private_handle_t *)fbLayer->handle;
-        if(extOnlyLayerIndex!= -1) {
-            hwc_layer_1_t *extLayer = &list->hwLayers[extOnlyLayerIndex];
-            hnd = (private_handle_t *)extLayer->handle;
-        } else if(copybitDone && ctx->mMDP.version > qdutils::MDP_V4_3) {
-            hnd = ctx->mCopyBit[dpy]->getCurrentRenderBuffer();
-        }
-
-        if(hnd && !isYuvBuffer(hnd)) {
+        if(fbLayer->compositionType == HWC_FRAMEBUFFER_TARGET &&
+                !(fbLayer->flags & HWC_SKIP_LAYER) && hnd &&
+                (list->numHwLayers > 1)) {
             if (!ctx->mFBUpdate[dpy]->draw(ctx, hnd)) {
                 ALOGE("%s: FBUpdate::draw fail!", __FUNCTION__);
                 ret = -1;
             }
         }
-
-        if(!Overlay::displayCommit(ctx->dpyAttr[dpy].fd)) {
-            ALOGE("%s: display commit fail for %d dpy!", __FUNCTION__, dpy);
+        if (!ctx->mExtDisplay->post()) {
+            ALOGE("%s: ctx->mExtDisplay->post fail!", __FUNCTION__);
             ret = -1;
         }
     }
@@ -584,68 +428,18 @@ static int hwc_set_external(hwc_context_t *ctx,
 }
 
 static int hwc_set_virtual(hwc_context_t *ctx,
-                            hwc_display_contents_1_t* list)
+                           hwc_display_contents_1_t* list, int dpy)
 {
-    ATRACE_CALL();
-    int ret = 0;
-
-    const int dpy = HWC_DISPLAY_VIRTUAL;
-
-
-    if (LIKELY(list) && ctx->dpyAttr[dpy].isActive &&
-            ctx->dpyAttr[dpy].connected &&
-            !ctx->dpyAttr[dpy].isPause) {
-        uint32_t last = list->numHwLayers - 1;
-        hwc_layer_1_t *fbLayer = &list->hwLayers[last];
-        int fd = -1; //FenceFD from the Copybit(valid in async mode)
-        bool copybitDone = false;
-        if(ctx->mCopyBit[dpy])
-            copybitDone = ctx->mCopyBit[dpy]->draw(ctx, list, dpy, &fd);
-
-        if(list->numHwLayers > 1)
-            hwc_sync(ctx, list, dpy, fd);
-
-
-        if (!ctx->mMDPComp[dpy]->draw(ctx, list)) {
-            ALOGE("%s: MDPComp draw failed", __FUNCTION__);
-            ret = -1;
-        }
-
-        int extOnlyLayerIndex =
-            ctx->listStats[dpy].extOnlyLayerIndex;
-
-        private_handle_t *hnd = (private_handle_t *)fbLayer->handle;
-        if(extOnlyLayerIndex!= -1) {
-            hwc_layer_1_t *extLayer = &list->hwLayers[extOnlyLayerIndex];
-            hnd = (private_handle_t *)extLayer->handle;
-        } else if(copybitDone) {
-            hnd = ctx->mCopyBit[dpy]->getCurrentRenderBuffer();
-        }
-
-        if(hnd && !isYuvBuffer(hnd)) {
-            if (!ctx->mFBUpdate[dpy]->draw(ctx, hnd)) {
-                ALOGE("%s: FBUpdate::draw fail!", __FUNCTION__);
-                ret = -1;
-            }
-        }
-
-        if(!Overlay::displayCommit(ctx->dpyAttr[dpy].fd)) {
-            ALOGE("%s: display commit fail for %d dpy!", __FUNCTION__, dpy);
-            ret = -1;
-        }
-    }
-
+    //XXX: Implement set.
     closeAcquireFds(list);
-
-    if (list && !ctx->mVirtualonExtActive && (list->retireFenceFd < 0) ) {
+    if (list) {
         // SF assumes HWC waits for the acquire fence and returns a new fence
         // that signals when we're done. Since we don't wait, and also don't
         // touch the buffer, we can just handle the acquire fence back to SF
         // as the retire fence.
         list->retireFenceFd = list->outbufAcquireFenceFd;
     }
-
-    return ret;
+    return 0;
 }
 
 
@@ -655,10 +449,10 @@ static int hwc_set(hwc_composer_device_1 *dev,
 {
     int ret = 0;
     hwc_context_t* ctx = (hwc_context_t*)(dev);
-    for (uint32_t i = 0; i <= numDisplays; i++) {
+    Locker::Autolock _l(ctx->mBlankLock);
+    for (uint32_t i = 0; i < numDisplays; i++) {
         hwc_display_contents_1_t* list = displays[i];
-        int dpy = getDpyforExternalDisplay(ctx, i);
-        switch(dpy) {
+        switch(i) {
             case HWC_DISPLAY_PRIMARY:
                 ret = hwc_set_primary(ctx, list);
                 break;
@@ -666,7 +460,7 @@ static int hwc_set(hwc_composer_device_1 *dev,
                 ret = hwc_set_external(ctx, list);
                 break;
             case HWC_DISPLAY_VIRTUAL:
-                ret = hwc_set_virtual(ctx, list);
+                ret = hwc_set_virtual(ctx, list, i);
                 break;
             default:
                 ret = -EINVAL;
@@ -675,11 +469,6 @@ static int hwc_set(hwc_composer_device_1 *dev,
     // This is only indicative of how many times SurfaceFlinger posts
     // frames to the display.
     CALC_FPS();
-    MDPComp::resetIdleFallBack();
-    //Was locked at the beginning of prepare
-    //Composition cycle is complete signal all waiting threads
-    ctx->mDrawLock.signal();
-    ctx->mDrawLock.unlock();
     return ret;
 }
 
@@ -687,7 +476,6 @@ int hwc_getDisplayConfigs(struct hwc_composer_device_1* dev, int disp,
         uint32_t* configs, size_t* numConfigs) {
     int ret = 0;
     hwc_context_t* ctx = (hwc_context_t*)(dev);
-    disp = getDpyforExternalDisplay(ctx, disp);
     //in 1.1 there is no way to choose a config, report as config id # 0
     //This config is passed to getDisplayAttributes. Ignore for now.
     switch(disp) {
@@ -699,9 +487,8 @@ int hwc_getDisplayConfigs(struct hwc_composer_device_1* dev, int disp,
             ret = 0; //NO_ERROR
             break;
         case HWC_DISPLAY_EXTERNAL:
-        case HWC_DISPLAY_VIRTUAL:
             ret = -1; //Not connected
-            if(ctx->dpyAttr[disp].connected) {
+            if(ctx->dpyAttr[HWC_DISPLAY_EXTERNAL].connected) {
                 ret = 0; //NO_ERROR
                 if(*numConfigs > 0) {
                     configs[0] = 0;
@@ -717,9 +504,8 @@ int hwc_getDisplayAttributes(struct hwc_composer_device_1* dev, int disp,
         uint32_t config, const uint32_t* attributes, int32_t* values) {
 
     hwc_context_t* ctx = (hwc_context_t*)(dev);
-    disp = getDpyforExternalDisplay(ctx, disp);
-    //If hotpluggable displays(i.e, HDMI, WFD) are inactive return error
-    if( (disp != HWC_DISPLAY_PRIMARY) && !ctx->dpyAttr[disp].connected) {
+    //If hotpluggable displays are inactive return error
+    if(disp == HWC_DISPLAY_EXTERNAL && !ctx->dpyAttr[disp].connected) {
         return -1;
     }
 
@@ -769,7 +555,6 @@ int hwc_getDisplayAttributes(struct hwc_composer_device_1* dev, int disp,
 void hwc_dump(struct hwc_composer_device_1* dev, char *buff, int buff_len)
 {
     hwc_context_t* ctx = (hwc_context_t*)(dev);
-    Locker::Autolock _l(ctx->mDrawLock);
     android::String8 aBuf("");
     dumpsys_log(aBuf, "Qualcomm HWC state:\n");
     dumpsys_log(aBuf, "  MDPVersion=%d\n", ctx->mMDP.version);
@@ -814,7 +599,7 @@ static int hwc_device_open(const struct hw_module_t* module, const char* name,
 
         //Setup HWC methods
         dev->device.common.tag          = HARDWARE_DEVICE_TAG;
-        dev->device.common.version      = HWC_DEVICE_API_VERSION_1_3;
+        dev->device.common.version      = HWC_DEVICE_API_VERSION_1_2;
         dev->device.common.module       = const_cast<hw_module_t*>(module);
         dev->device.common.close        = hwc_device_close;
         dev->device.prepare             = hwc_prepare;

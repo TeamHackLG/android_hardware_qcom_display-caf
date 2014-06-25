@@ -33,8 +33,8 @@
 
 namespace overlay {
 
-GenericPipe::GenericPipe(int dpy) : mDpy(dpy), mRotDownscaleOpt(false),
-    pipeState(CLOSED) {
+GenericPipe::GenericPipe(int dpy) : mFbNum(dpy), mRot(0), mRotUsed(false),
+        mRotDownscaleOpt(false), mPreRotated(false), pipeState(CLOSED) {
     init();
 }
 
@@ -45,26 +45,26 @@ GenericPipe::~GenericPipe() {
 bool GenericPipe::init()
 {
     ALOGE_IF(DEBUG_OVERLAY, "GenericPipe init");
+    mRotUsed = false;
     mRotDownscaleOpt = false;
+    mPreRotated = false;
+    if(mFbNum)
+        mFbNum = Overlay::getInstance()->getExtFbNum();
 
-    int fbNum = Overlay::getFbForDpy(mDpy);
-    if( fbNum < 0 ) {
-        ALOGE("%s: Invalid FB for the display: %d",__FUNCTION__, mDpy);
-        return false;
-    }
+    ALOGD_IF(DEBUG_OVERLAY,"%s: mFbNum:%d",__FUNCTION__, mFbNum);
 
-    ALOGD_IF(DEBUG_OVERLAY,"%s: mFbNum:%d",__FUNCTION__, fbNum);
-
-
-    if(!mCtrlData.ctrl.init(fbNum)) {
+    if(!mCtrlData.ctrl.init(mFbNum)) {
         ALOGE("GenericPipe failed to init ctrl");
         return false;
     }
 
-    if(!mCtrlData.data.init(fbNum)) {
+    if(!mCtrlData.data.init(mFbNum)) {
         ALOGE("GenericPipe failed to init data");
         return false;
     }
+
+    //get a new rotator object, take ownership
+    mRot = Rotator::getRotator();
 
     return true;
 }
@@ -81,12 +81,21 @@ bool GenericPipe::close() {
         ret = false;
     }
 
+    delete mRot;
+    mRot = 0;
+
     setClosed();
     return ret;
 }
 
 void GenericPipe::setSource(const utils::PipeArgs& args) {
+    //Cache if user wants 0-rotation
+    mRotUsed = args.rotFlags & utils::ROT_0_ENABLED;
     mRotDownscaleOpt = args.rotFlags & utils::ROT_DOWNSCALE_ENABLED;
+    mPreRotated = args.rotFlags & utils::ROT_PREROTATED;
+    if(mPreRotated) mRotUsed = false;
+    mRot->setSource(args.whf);
+    mRot->setFlags(args.mdpFlags);
     mCtrlData.ctrl.setSource(args);
 }
 
@@ -95,6 +104,10 @@ void GenericPipe::setCrop(const overlay::utils::Dim& d) {
 }
 
 void GenericPipe::setTransform(const utils::eTransform& orient) {
+    //Rotation could be enabled by user for zero-rot or the layer could have
+    //some transform. Mark rotation enabled in either case.
+    mRotUsed |= ((orient & utils::OVERLAY_TRANSFORM_ROT_90) && !mPreRotated);
+    mRot->setTransform(orient);
     mCtrlData.ctrl.setTransform(orient);
 }
 
@@ -116,10 +129,38 @@ bool GenericPipe::commit() {
         ovutils::Dim dst(mCtrlData.ctrl.getPosition());
         downscale_factor = ovutils::getDownscaleFactor(
                 src.w, src.h, dst.w, dst.h);
+        mRotUsed |= (downscale_factor && !mPreRotated);
+    }
+
+
+    if(mRotUsed) {
+        mRot->setDownscale(downscale_factor);
+        //If wanting to use rotator, start it.
+        if(!mRot->commit()) {
+            ALOGE("GenPipe Rotator commit failed");
+            //If rot commit fails, flush rotator session, memory, fd and create
+            //a hollow rotator object
+            delete mRot;
+            mRot = Rotator::getRotator();
+            pipeState = CLOSED;
+            return false;
+        }
+        /* Set the mdp src format to the output format of the rotator.
+         * The output format of the rotator might be different depending on
+         * whether fastyuv mode is enabled in the rotator.
+         */
+        mCtrlData.ctrl.updateSrcFormat(mRot->getDstFormat());
     }
 
     mCtrlData.ctrl.setDownscale(downscale_factor);
     ret = mCtrlData.ctrl.commit();
+
+    //If mdp commit fails, flush rotator session, memory, fd and create a hollow
+    //rotator object
+    if(ret == false) {
+        delete mRot;
+        mRot = Rotator::getRotator();
+    }
 
     pipeState = ret ? OPEN : CLOSED;
     return ret;
@@ -133,7 +174,26 @@ bool GenericPipe::queueBuffer(int fd, uint32_t offset) {
     // set pipe id from ctrl to data
     mCtrlData.data.setPipeId(pipeId);
 
-    return mCtrlData.data.queueBuffer(fd, offset);
+    int finalFd = fd;
+    uint32_t finalOffset = offset;
+    //If rotator is to be used, queue to it, so it can ROTATE.
+    if(mRotUsed) {
+        if(!mRot->queueBuffer(fd, offset)) {
+            ALOGE("GenPipe Rotator play failed");
+            return false;
+        }
+        //Configure MDP's source buffer as the current output buffer of rotator
+        if(mRot->getDstMemId() != -1) {
+            finalFd = mRot->getDstMemId();
+            finalOffset = mRot->getDstOffset();
+        } else {
+            //Could be -1 for NullRotator, if queue above succeeds.
+            //Need an actual rotator. Modify overlay State Traits.
+            //Not fatal, keep queuing to MDP without rotation.
+            ALOGE("Null rotator in use, where an actual is required");
+        }
+    }
+    return mCtrlData.data.queueBuffer(finalFd, finalOffset);
 }
 
 int GenericPipe::getCtrlFd() const {
@@ -149,15 +209,18 @@ void GenericPipe::dump() const
 {
     ALOGE("== Dump Generic pipe start ==");
     ALOGE("pipe state = %d", (int)pipeState);
+    OVASSERT(mRot, "GenericPipe should have a valid Rot");
     mCtrlData.ctrl.dump();
     mCtrlData.data.dump();
-
+    mRot->dump();
     ALOGE("== Dump Generic pipe end ==");
 }
 
 void GenericPipe::getDump(char *buf, size_t len) {
     mCtrlData.ctrl.getDump(buf, len);
     mCtrlData.data.getDump(buf, len);
+    if(mRotUsed && mRot)
+        mRot->getDump(buf, len);
 }
 
 bool GenericPipe::isClosed() const  {
@@ -173,8 +236,5 @@ bool GenericPipe::setClosed() {
     return true;
 }
 
-void GenericPipe::forceSet() {
-    mCtrlData.ctrl.forceSet();
-}
 
 } //namespace overlay

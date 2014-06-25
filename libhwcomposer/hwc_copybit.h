@@ -21,13 +21,20 @@
 #define HWC_COPYBIT_H
 #include "hwc_utils.h"
 
-#define NUM_RENDER_BUFFERS 2
+#define LIKELY( exp )       (__builtin_expect( (exp) != 0, true  ))
+#define UNLIKELY( exp )     (__builtin_expect( (exp) != 0, false ))
+
+//These scaling factors are specific for MDP3. Normally scaling factor
+//is only 4, but copybit will create temp buffer to let it run through
+//twice
+#define MAX_SCALE_FACTOR 16
+#define MIN_SCALE_FACTOR 0.0625
 
 namespace qhwc {
 
 class CopyBit {
 public:
-    CopyBit(hwc_context_t *ctx, const int& dpy);
+    CopyBit();
     ~CopyBit();
     // API to get copybit engine(non static)
     struct copybit_device_t *getCopyBitDevice();
@@ -39,17 +46,12 @@ public:
                                                         int dpy, int* fd);
     // resets the values
     void reset();
-
-    private_handle_t * getCurrentRenderBuffer();
-
-    void setReleaseFd(int fd);
-
 private:
     // holds the copybit device
     struct copybit_device_t *mEngine;
     // Helper functions for copybit composition
     int  drawLayerUsingCopybit(hwc_context_t *dev, hwc_layer_1_t *layer,
-                                       private_handle_t *renderBuffer, int dpy);
+                          private_handle_t *renderBuffer, int dpy, bool isFG);
     bool canUseCopybitForYUV (hwc_context_t *ctx);
     bool canUseCopybitForRGB (hwc_context_t *ctx,
                                      hwc_display_contents_1_t *list, int dpy);
@@ -66,24 +68,8 @@ private:
     void getLayerResolution(const hwc_layer_1_t* layer,
                                    unsigned int &width, unsigned int& height);
 
-    int allocRenderBuffers(int w, int h, int f);
-
-    void freeRenderBuffers();
-
-    int clear (private_handle_t* hnd, hwc_rect_t& rect);
-
-    private_handle_t* mRenderBuffer[NUM_RENDER_BUFFERS];
-
-    // Index of the current intermediate render buffer
-    int mCurRenderBufferIndex;
-
-    // Release FDs of the intermediate render buffer
-    int mRelFd[NUM_RENDER_BUFFERS];
-
     //Dynamic composition threshold for deciding copybit usage.
     double mDynThreshold;
-    int mAlignedFBWidth;
-    int mAlignedFBHeight;
 };
 
 }; //namespace qhwc

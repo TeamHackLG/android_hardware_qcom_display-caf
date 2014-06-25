@@ -37,7 +37,7 @@ namespace ovutils = overlay::utils;
 
 class MDPComp {
 public:
-    explicit MDPComp(int, int);
+    explicit MDPComp(int);
     virtual ~MDPComp(){};
     /*sets up mdp comp for the current frame */
     int prepare(hwc_context_t *ctx, hwc_display_contents_1_t* list);
@@ -51,11 +51,8 @@ public:
     static void timeout_handler(void *udata);
     /* Initialize MDP comp*/
     static bool init(hwc_context_t *ctx);
-    static void resetIdleFallBack() { sIdleFallBack = false; }
 
 protected:
-    enum { MAX_SEC_LAYERS = 1 }; //TODO add property support
-
     enum ePipeType {
         MDPCOMP_OV_RGB = ovutils::OV_MDP_PIPE_RGB,
         MDPCOMP_OV_VG = ovutils::OV_MDP_PIPE_VG,
@@ -80,7 +77,7 @@ protected:
     struct FrameInfo {
         /* maps layer list to mdp list */
         int layerCount;
-        int layerToMDP[MAX_NUM_APP_LAYERS];
+        int layerToMDP[MAX_NUM_LAYERS];
 
         /* maps mdp list to layer list */
         int mdpCount;
@@ -88,10 +85,7 @@ protected:
 
         /* layer composing on FB? */
         int fbCount;
-        bool isFBComposed[MAX_NUM_APP_LAYERS];
-
-        int notUpdatingCount;
-        bool isNotUpdating[MAX_NUM_APP_LAYERS];
+        bool isFBComposed[MAX_NUM_LAYERS];
 
         bool needsRedraw;
         int fbZ;
@@ -107,9 +101,9 @@ protected:
     struct LayerCache {
         int layerCount;
         int mdpCount;
-        int fbCount;
+        int cacheCount;
         int fbZ;
-        buffer_handle_t hnd[MAX_NUM_APP_LAYERS];
+        buffer_handle_t hnd[MAX_NUM_LAYERS];
 
         /* c'tor */
         LayerCache();
@@ -138,7 +132,7 @@ protected:
     ovutils::eDest getMdpPipe(hwc_context_t *ctx, ePipeType type);
 
     /* checks for conditions where mdpcomp is not possible */
-    bool isFrameDoable(hwc_context_t *ctx, hwc_display_contents_1_t* list);
+    bool isFrameDoable(hwc_context_t *ctx);
     /* checks for conditions where RGB layers cannot be bypassed */
     bool isFullFrameDoable(hwc_context_t *ctx, hwc_display_contents_1_t* list);
     /* checks if full MDP comp can be done */
@@ -160,21 +154,17 @@ protected:
     bool isValidDimension(hwc_context_t *ctx, hwc_layer_1_t *layer);
     /* tracks non updating layers*/
     void updateLayerCache(hwc_context_t* ctx, hwc_display_contents_1_t* list);
+    /* optimize layers for mdp comp*/
+    void batchLayers();
     /* gets available pipes for mdp comp */
     int getAvailablePipes(hwc_context_t* ctx);
-    /* optimize layers for mdp comp*/
-    bool batchLayers(hwc_context_t *ctx, hwc_display_contents_1_t* list);
     /* updates cache map with YUV info */
     void updateYUV(hwc_context_t* ctx, hwc_display_contents_1_t* list);
     bool programMDP(hwc_context_t *ctx, hwc_display_contents_1_t* list);
     bool programYUV(hwc_context_t *ctx, hwc_display_contents_1_t* list);
-    void reset(const int& numAppLayers, hwc_display_contents_1_t* list);
-    bool isSupportedForMDPComp(hwc_context_t *ctx, hwc_layer_1_t* layer);
 
     int mDpy;
-    const int mMaxPipesPerLayer;
     static bool sEnabled;
-    static bool sEnableMixedMode;
     static bool sDebugLogs;
     static bool sIdleFallBack;
     static int sMaxPipesPerMixer;
@@ -185,13 +175,11 @@ protected:
 
 class MDPCompLowRes : public MDPComp {
 public:
-    explicit MDPCompLowRes(int dpy): MDPComp(dpy, MAX_PIPES_PER_LAYER) {}
+    explicit MDPCompLowRes(int dpy):MDPComp(dpy){};
     virtual ~MDPCompLowRes(){};
     virtual bool draw(hwc_context_t *ctx, hwc_display_contents_1_t *list);
 
 private:
-    enum {MAX_PIPES_PER_LAYER = 1};
-
     struct MdpPipeInfoLowRes : public MdpPipeInfo {
         ovutils::eDest index;
         virtual ~MdpPipeInfoLowRes() {};
@@ -211,11 +199,10 @@ private:
 
 class MDPCompHighRes : public MDPComp {
 public:
-    explicit MDPCompHighRes(int dpy): MDPComp(dpy, MAX_PIPES_PER_LAYER) {};
+    explicit MDPCompHighRes(int dpy):MDPComp(dpy){};
     virtual ~MDPCompHighRes(){};
     virtual bool draw(hwc_context_t *ctx, hwc_display_contents_1_t *list);
 private:
-    enum {MAX_PIPES_PER_LAYER = 2};
     struct MdpPipeInfoHighRes : public MdpPipeInfo {
         ovutils::eDest lIndex;
         ovutils::eDest rIndex;
@@ -236,6 +223,5 @@ private:
 
     virtual int pipesNeeded(hwc_context_t *ctx, hwc_display_contents_1_t* list);
 };
-
 }; //namespace
 #endif
