@@ -1142,7 +1142,8 @@ int hwc_sync(hwc_context_t *ctx, hwc_display_contents_1_t* list, int dpy,
 
 #ifndef MDSS_TARGET
     //Send acquireFenceFds to rotator
-    if(mdpVersion < qdutils::MDSS_V5) {
+    if(ctx->mMDP.version >= qdutils::MDP_V4_0 &&
+                ctx->mMDP.version < qdutils::MDSS_V5) {
         //A-family
         int rotFd = ctx->mRotMgr->getRotDevFd();
         struct msm_rotator_buf_sync rotData;
@@ -1249,7 +1250,8 @@ int hwc_sync(hwc_context_t *ctx, hwc_display_contents_1_t* list, int dpy,
         ctx->mCopyBit[dpy]->setReleaseFd(releaseFd);
 
     //A-family
-    if(mdpVersion < qdutils::MDSS_V5) {
+    if(ctx->mMDP.version >= qdutils::MDP_V4_0 &&
+                ctx->mMDP.version < qdutils::MDSS_V5) {
         //Signals when MDP finishes reading rotator buffers.
         ctx->mLayerRotMap[dpy]->setReleaseFd(releaseFd);
     }
