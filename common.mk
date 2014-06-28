@@ -50,6 +50,6 @@ ifneq ($(TARGET_DISPLAY_INSECURE_MM_HEAP),true)
     common_flags += -DSECURE_MM_HEAP
 endif
 
-ifneq ($(filter msm7x30 msm8660,$(TARGET_BOARD_PLATFORM)),)
+ifneq ($(filter msm7x27a msm7x30 msm8660,$(TARGET_BOARD_PLATFORM)),)
     common_flags += -DNO_IOMMU
 endif
