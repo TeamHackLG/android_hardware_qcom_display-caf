@@ -386,6 +386,7 @@ static int hwc_blank(struct hwc_composer_device_1* dev, int dpy, int blank)
         if(!blank) {
             // Enable HPD here, as during bootup unblank is called
             // when SF is completely initialized
+            if (ctx->dpyAttr[HWC_DISPLAY_EXTERNAL].connected)
             ctx->mExtDisplay->setHPD(1);
         }
 
