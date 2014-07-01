@@ -535,9 +535,9 @@ static int hwc_set_primary(hwc_context_t *ctx, hwc_display_contents_1_t* list) {
             }
         }
 
-        if(!Overlay::displayCommit(ctx->dpyAttr[dpy].fd)) {
-            ALOGE("%s: display commit fail for %d dpy!", __FUNCTION__, dpy);
-            ret = -1;
+        if (ctx->mFbDev->post(ctx->mFbDev, fbLayer->handle)) {
+             ALOGE("%s: ctx->mFbDev->post fail!", __FUNCTION__);
+             ret = -1;
         }
     }
 
