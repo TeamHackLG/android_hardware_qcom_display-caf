@@ -36,6 +36,9 @@
 #include "hwc_qclient.h"
 #include "QService.h"
 #include "comptype.h"
+#ifdef USE_MDP3
+#include <fb_priv.h>
+#endif
 
 using namespace qClient;
 using namespace qService;
@@ -56,6 +59,12 @@ static int openFramebufferDevice(hwc_context_t *ctx)
         ALOGE("%s: Error Opening FB : %s", __FUNCTION__, strerror(errno));
         return -errno;
     }
+#ifdef USE_MDP3
+    hw_module_t const *module;
+    if (hw_get_module(GRALLOC_HARDWARE_MODULE_ID, &module) == 0) {
+        framebuffer_open(module, &(ctx->mFbDev));
+    }
+#endif
 
     if (ioctl(fb_fd, FBIOGET_VSCREENINFO, &info) == -1) {
         ALOGE("%s:Error in ioctl FBIOGET_VSCREENINFO: %s", __FUNCTION__,
