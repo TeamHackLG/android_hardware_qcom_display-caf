@@ -36,6 +36,7 @@
 #include "hwc_qclient.h"
 #include "QService.h"
 #include "comptype.h"
+#include <fb_priv.h>
 
 using namespace qClient;
 using namespace qService;
@@ -48,6 +49,7 @@ namespace qhwc {
 
 static int openFramebufferDevice(hwc_context_t *ctx)
 {
+if (ctx->mMDP.version >= qdutils::MDP_V4_0) {
     struct fb_fix_screeninfo finfo;
     struct fb_var_screeninfo info;
 
@@ -108,7 +110,24 @@ static int openFramebufferDevice(hwc_context_t *ctx)
     ctx->dpyAttr[HWC_DISPLAY_PRIMARY].xdpi = xdpi;
     ctx->dpyAttr[HWC_DISPLAY_PRIMARY].ydpi = ydpi;
     ctx->dpyAttr[HWC_DISPLAY_PRIMARY].vsync_period = 1000000000l / fps;
-
+} else {
+    hw_module_t const *module;
+    if (hw_get_module(GRALLOC_HARDWARE_MODULE_ID, &module) == 0) {
+        framebuffer_open(module, &(ctx->mFbDev));
+        private_module_t* m = reinterpret_cast<private_module_t*>(
+                ctx->mFbDev->common.module);
+        //xres, yres may not be 32 aligned
+        ctx->dpyAttr[HWC_DISPLAY_PRIMARY].stride = m->finfo.line_length /
+                                                (m->info.xres/8);
+        ctx->dpyAttr[HWC_DISPLAY_PRIMARY].xres = m->info.xres;
+        ctx->dpyAttr[HWC_DISPLAY_PRIMARY].yres = m->info.yres;
+        ctx->dpyAttr[HWC_DISPLAY_PRIMARY].xdpi = ctx->mFbDev->xdpi;
+        ctx->dpyAttr[HWC_DISPLAY_PRIMARY].ydpi = ctx->mFbDev->ydpi;
+        ctx->dpyAttr[HWC_DISPLAY_PRIMARY].vsync_period =
+                1000000000l / ctx->mFbDev->fps;
+        ctx->dpyAttr[HWC_DISPLAY_PRIMARY].fd = openFb(HWC_DISPLAY_PRIMARY);
+    }
+  }
     return 0;
 }
 
